@@ -116,7 +116,6 @@ function binary(args, homeassistant) {
     return withHomeAssistant(m.binary({
         cluster: CLUSTER_NAME,
         access: "STATE",
-        // zigbee-herdsman decodes ZCL BOOLEAN values as the numeric bytes 1/0.
         valueOn: [true, 1],
         valueOff: [false, 0],
         ...args,
@@ -124,14 +123,16 @@ function binary(args, homeassistant) {
 }
 
 function commandButton(name, description, label, icon) {
-    return binary({
+    return withHomeAssistant(m.enumLookup({
         name,
+        cluster: CLUSTER_NAME,
         attribute: name,
         access: "SET",
         description,
         label,
+        lookup: {PRESS: true},
         entityCategory: "config",
-    }, {type: "button", entityCategory: "config", icon});
+    }), {entityCategory: "config", icon});
 }
 
 function initialAttributeRead() {
@@ -473,8 +474,6 @@ function overrideHaDiscoveryPayload(payload, options) {
         const ieeeSuffix = identifier.match(/([0-9a-f]{6})$/i)?.[1]?.toLowerCase();
         payload.device.name = ieeeSuffix ? `S1 Pro Multi Sense ${ieeeSuffix}` : "S1 Pro Multi Sense";
 
-        // The short suffix already distinguishes identical units in Home Assistant.
-        // An explicit empty value also clears a model ID cached by the device registry.
         payload.device.model_id = "";
     }
 
@@ -503,10 +502,8 @@ function overrideHaDiscoveryPayload(payload, options) {
         payload.state_class = "measurement";
     }
 
-    // Match the ZHA quirk: editable numeric settings use text input boxes.
     if (entityId.startsWith("number.")) payload.mode = "box";
 
-    // Polygon coordinates are stored by the firmware as signed whole centimetres.
     const coordinate = entityId.match(/((?:exclusion_zone|zone_[1-3])_p[1-8]_[xy])$/)?.[1];
     if (coordinate) {
         payload.value_template = `{{ (value_json["${coordinate}"] | round(0) | int) if value_json["${coordinate}"] is number else none }}`;
