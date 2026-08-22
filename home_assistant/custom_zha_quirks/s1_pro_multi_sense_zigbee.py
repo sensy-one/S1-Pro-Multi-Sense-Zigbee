@@ -18,7 +18,6 @@ from zhaquirks.builder import (
     UnitOfLength,
     UnitOfPressure,
     UnitOfTemperature,
-    UV_INDEX,
 )
 from zhaquirks.clusters import CustomCluster
 
@@ -52,6 +51,13 @@ class BME688IAQClassification(t.enum8):
     Extremely_polluted = 6
 
 
+class RadarTargetState(t.enum8):
+    No_target = 0
+    Moving = 1
+    Stationary = 2
+    Holding = 3
+
+
 IAQ_CLASSIFICATION_LABELS: Final = (
     "Excellent",
     "Good",
@@ -67,6 +73,13 @@ IAQ_ACCURACY_LABELS: Final = (
     "Low accuracy",
     "Medium accuracy",
     "High accuracy",
+)
+
+TARGET_STATE_LABELS: Final = (
+    "No target",
+    "Moving",
+    "Stationary",
+    "Holding",
 )
 
 
@@ -94,6 +107,13 @@ def iaq_accuracy_label(value: int) -> str:
     return "Unknown"
 
 
+def target_state_label(value: int) -> str:
+    index = int(value)
+    if 0 <= index < len(TARGET_STATE_LABELS):
+        return TARGET_STATE_LABELS[index]
+    return "Unknown"
+
+
 class S1ProMmWaveCluster(CustomCluster):
     cluster_id = CLUSTER_ID
     ep_attribute = "s1_pro_mmwave"
@@ -112,6 +132,12 @@ class S1ProMmWaveCluster(CustomCluster):
         target_1_speed = ZCLAttributeDef(
             id=0x0003, type=t.int16s, access="rp", is_manufacturer_specific=False
         )
+        target_1_state = ZCLAttributeDef(
+            id=0x0004,
+            type=RadarTargetState,
+            access="rp",
+            is_manufacturer_specific=False,
+        )
         target_2_x = ZCLAttributeDef(
             id=0x0010, type=t.int16s, access="rp", is_manufacturer_specific=False
         )
@@ -124,6 +150,12 @@ class S1ProMmWaveCluster(CustomCluster):
         target_2_speed = ZCLAttributeDef(
             id=0x0013, type=t.int16s, access="rp", is_manufacturer_specific=False
         )
+        target_2_state = ZCLAttributeDef(
+            id=0x0014,
+            type=RadarTargetState,
+            access="rp",
+            is_manufacturer_specific=False,
+        )
         target_3_x = ZCLAttributeDef(
             id=0x0020, type=t.int16s, access="rp", is_manufacturer_specific=False
         )
@@ -135,6 +167,12 @@ class S1ProMmWaveCluster(CustomCluster):
         )
         target_3_speed = ZCLAttributeDef(
             id=0x0023, type=t.int16s, access="rp", is_manufacturer_specific=False
+        )
+        target_3_state = ZCLAttributeDef(
+            id=0x0024,
+            type=RadarTargetState,
+            access="rp",
+            is_manufacturer_specific=False,
         )
         all_targets_count = ZCLAttributeDef(
             id=0x00F3, type=t.uint8_t, access="rp", is_manufacturer_specific=False
@@ -254,11 +292,8 @@ class S1ProMmWaveCluster(CustomCluster):
             access="rwp",
             is_manufacturer_specific=False,
         )
-        ltr390_ambient_light = ZCLAttributeDef(
+        ltrf216a_illuminance = ZCLAttributeDef(
             id=0x0300, type=t.uint32_t, access="rp", is_manufacturer_specific=False
-        )
-        ltr390_uv_index = ZCLAttributeDef(
-            id=0x0301, type=t.uint16_t, access="rp", is_manufacturer_specific=False
         )
         buzzer_power = ZCLAttributeDef(
             id=0x0400, type=t.Bool, access="rwp", is_manufacturer_specific=False
@@ -269,6 +304,33 @@ class S1ProMmWaveCluster(CustomCluster):
         )
         esp32_connected = ZCLAttributeDef(
             id=0x0501, type=t.Bool, access="rp", is_manufacturer_specific=False
+        )
+        holding_enabled = ZCLAttributeDef(
+            id=0x0700, type=t.Bool, access="rwp", is_manufacturer_specific=False
+        )
+        holding_gate_radius = ZCLAttributeDef(
+            id=0x0701,
+            type=t.uint16_t,
+            access="rwp",
+            is_manufacturer_specific=False,
+        )
+        stationary_speed_threshold = ZCLAttributeDef(
+            id=0x0702,
+            type=t.uint16_t,
+            access="rwp",
+            is_manufacturer_specific=False,
+        )
+        stationary_time = ZCLAttributeDef(
+            id=0x0703,
+            type=t.uint16_t,
+            access="rwp",
+            is_manufacturer_specific=False,
+        )
+        dropout_hold_time = ZCLAttributeDef(
+            id=0x0704,
+            type=t.uint16_t,
+            access="rwp",
+            is_manufacturer_specific=False,
         )
         exclusion_zone_p1_x = ZCLAttributeDef(
             id=0x0600, type=t.int16s, access="rwp", is_manufacturer_specific=False
@@ -539,7 +601,7 @@ REPORT_SCD40: Final = ReportingConfig(
     reportable_change=0,
 )
 
-REPORT_LTR390: Final = ReportingConfig(
+REPORT_LTRF216A: Final = ReportingConfig(
     min_interval=3,
     max_interval=30,
     reportable_change=0,
@@ -572,7 +634,7 @@ builder = (
         cluster_id=OnOff.cluster_id,
         unique_id_suffix="10",
         new_translation_key="ws2812_led",
-        new_fallback_name="WS2812 Led",
+        new_fallback_name="WS2812 LED",
         new_entity_category=EntityType.CONFIG,
     )
     .prevent_default_entity_creation(
@@ -580,8 +642,8 @@ builder = (
     )
     .change_entity_metadata(
         function=lambda entity: entity.__class__.__name__ == "LQISensor",
-        new_translation_key="esp32_lqi",
-        new_fallback_name="ESP32 LQI",
+        new_translation_key="link_quality",
+        new_fallback_name="Link Quality",
         new_entity_category=EntityType.DIAGNOSTIC,
         new_entity_registry_enabled_default=True,
     )
@@ -662,6 +724,19 @@ for target in range(1, 4):
         unique_id_suffix=speed_attribute,
         translation_key=speed_attribute,
         fallback_name=f"Target {target} speed",
+    )
+
+    state_attribute = f"target_{target}_state"
+    builder.sensor(
+        state_attribute,
+        CLUSTER_ID,
+        endpoint_id=ENDPOINT,
+        entity_type=EntityType.STANDARD,
+        attribute_converter=target_state_label,
+        reporting_config=REPORT_EVERY_SECOND,
+        unique_id_suffix=state_attribute,
+        translation_key=state_attribute,
+        fallback_name=f"Target {target} state",
     )
 
 builder.sensor(
@@ -747,6 +822,81 @@ builder.number(
     unique_id_suffix="any_presence_delay",
     translation_key="any_presence_delay",
     fallback_name="Any Presence Delay",
+)
+
+builder.switch(
+    "holding_enabled",
+    CLUSTER_ID,
+    endpoint_id=ENDPOINT,
+    entity_type=EntityType.CONFIG,
+    reporting_config=REPORT_EVERY_SECOND,
+    unique_id_suffix="holding_enabled",
+    translation_key="holding_enabled",
+    fallback_name="Radar Holding Engine",
+)
+
+builder.number(
+    "holding_gate_radius",
+    CLUSTER_ID,
+    endpoint_id=ENDPOINT,
+    entity_type=EntityType.STANDARD,
+    min_value=5,
+    max_value=300,
+    step=1,
+    unit=UnitOfLength.CENTIMETERS,
+    mode="box",
+    reporting_config=REPORT_EVERY_SECOND,
+    unique_id_suffix="holding_gate_radius",
+    translation_key="holding_gate_radius",
+    fallback_name="Radar Holding Gate Radius",
+)
+
+builder.number(
+    "stationary_speed_threshold",
+    CLUSTER_ID,
+    endpoint_id=ENDPOINT,
+    entity_type=EntityType.STANDARD,
+    min_value=0,
+    max_value=100,
+    step=1,
+    unit="cm/s",
+    mode="box",
+    reporting_config=REPORT_EVERY_SECOND,
+    unique_id_suffix="stationary_speed_threshold",
+    translation_key="stationary_speed_threshold",
+    fallback_name="Radar Stationary Speed Threshold",
+)
+
+builder.number(
+    "stationary_time",
+    CLUSTER_ID,
+    endpoint_id=ENDPOINT,
+    entity_type=EntityType.STANDARD,
+    min_value=0,
+    max_value=120,
+    step=1,
+    unit="s",
+    mode="box",
+    reporting_config=REPORT_EVERY_SECOND,
+    unique_id_suffix="stationary_time",
+    translation_key="stationary_time",
+    fallback_name="Radar Stationary Time",
+)
+
+builder.number(
+    "dropout_hold_time",
+    CLUSTER_ID,
+    endpoint_id=ENDPOINT,
+    entity_type=EntityType.STANDARD,
+    min_value=0,
+    max_value=60,
+    step=1,
+    unit="min",
+    mode="box",
+    reporting_config=REPORT_EVERY_SECOND,
+    unique_id_suffix="dropout_hold_time",
+    translation_key="dropout_hold_time",
+    fallback_name="Radar Dropout Hold Time",
 )
 
 builder.number(
@@ -1215,7 +1365,7 @@ builder.number(
 )
 
 builder.sensor(
-    "ltr390_ambient_light",
+    "ltrf216a_illuminance",
     CLUSTER_ID,
     endpoint_id=ENDPOINT,
     entity_type=EntityType.STANDARD,
@@ -1224,25 +1374,10 @@ builder.sensor(
     unit=LIGHT_LUX,
     divisor=100,
     suggested_display_precision=2,
-    reporting_config=REPORT_LTR390,
-    unique_id_suffix="ltr390_ambient_light",
-    translation_key="ltr390_ambient_light",
-    fallback_name="LTR390 Ambient Light",
-)
-
-builder.sensor(
-    "ltr390_uv_index",
-    CLUSTER_ID,
-    endpoint_id=ENDPOINT,
-    entity_type=EntityType.STANDARD,
-    state_class=SensorStateClass.MEASUREMENT,
-    unit=UV_INDEX,
-    divisor=100,
-    suggested_display_precision=2,
-    reporting_config=REPORT_LTR390,
-    unique_id_suffix="ltr390_uv_index",
-    translation_key="ltr390_uv_index",
-    fallback_name="LTR390 UV Index",
+    reporting_config=REPORT_LTRF216A,
+    unique_id_suffix="ltrf216a_illuminance",
+    translation_key="ltrf216a_illuminance",
+    fallback_name="LTR-F216A Illuminance",
 )
 
 builder.switch(

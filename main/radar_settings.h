@@ -18,6 +18,16 @@ bool radar_settings_get_bluetooth_enabled(void);
 bool radar_settings_set_bluetooth_enabled(bool enabled);
 bool radar_settings_get_single_target(void);
 bool radar_settings_set_single_target(bool enabled);
+bool radar_settings_get_holding_enabled(void);
+bool radar_settings_set_holding_enabled(bool enabled);
+uint16_t radar_settings_get_holding_gate_radius_cm(void);
+bool radar_settings_set_holding_gate_radius_cm(uint16_t radius_cm);
+uint16_t radar_settings_get_stationary_speed_threshold_cms(void);
+bool radar_settings_set_stationary_speed_threshold_cms(uint16_t threshold_cms);
+uint16_t radar_settings_get_stationary_time_s(void);
+bool radar_settings_set_stationary_time_s(uint16_t time_s);
+uint16_t radar_settings_get_dropout_hold_minutes(void);
+bool radar_settings_set_dropout_hold_minutes(uint16_t minutes);
 void radar_settings_get_zones(radar_zones_config_t *config);
 bool radar_settings_set_exclusion_point(uint8_t point_index, bool y_axis,
                                         int16_t coordinate_cm);

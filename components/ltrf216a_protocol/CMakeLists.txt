@@ -1,4 +1,4 @@
 idf_component_register(
-    SRCS "src/ltr390_protocol.c"
+    SRCS "src/ltrf216a_protocol.c"
     INCLUDE_DIRS "include"
 )

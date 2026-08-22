@@ -17,6 +17,11 @@ static const char *NVS_PRESENCE_DELAY_KEY = "presence_s";
 static const char *NVS_FLIP_Y_KEY = "flip_y";
 static const char *NVS_BLUETOOTH_KEY = "bt_on";
 static const char *NVS_SINGLE_TARGET_KEY = "single";
+static const char *NVS_HOLDING_ENABLED_KEY = "hold_on";
+static const char *NVS_HOLDING_GATE_RADIUS_KEY = "hold_gate";
+static const char *NVS_STATIONARY_SPEED_KEY = "stat_speed";
+static const char *NVS_STATIONARY_TIME_KEY = "stat_time";
+static const char *NVS_DROPOUT_HOLD_TIME_KEY = "drop_min";
 static const char *NVS_ZONES_KEY = "zones_v1";
 static const char *NVS_EXCLUSION_POINT_COUNT_KEY = "excl_cnt";
 
@@ -40,6 +45,14 @@ static uint16_t s_presence_delay_s = S1_PRO_RADAR_DEFAULT_PRESENCE_DELAY_S;
 static bool s_flip_y_axis = S1_PRO_RADAR_DEFAULT_FLIP_Y_AXIS;
 static bool s_bluetooth_enabled = S1_PRO_RADAR_DEFAULT_BLUETOOTH_ENABLED;
 static bool s_single_target = S1_PRO_RADAR_DEFAULT_SINGLE_TARGET;
+static bool s_holding_enabled = S1_PRO_RADAR_DEFAULT_HOLDING_ENABLED;
+static uint16_t s_holding_gate_radius_cm =
+    S1_PRO_RADAR_DEFAULT_HOLDING_GATE_RADIUS_CM;
+static uint16_t s_stationary_speed_threshold_cms =
+    S1_PRO_RADAR_DEFAULT_STATIONARY_SPEED_THRESHOLD_CMS;
+static uint16_t s_stationary_time_s = S1_PRO_RADAR_DEFAULT_STATIONARY_TIME_S;
+static uint16_t s_dropout_hold_minutes =
+    S1_PRO_RADAR_DEFAULT_DROPOUT_HOLD_MINUTES;
 static radar_zones_config_t s_zones = {
     .zones = {
         [0] = {
@@ -76,6 +89,28 @@ static bool movement_threshold_is_valid(uint16_t threshold_cms)
 static bool presence_delay_is_valid(uint16_t delay_s)
 {
     return delay_s <= S1_PRO_RADAR_MAX_PRESENCE_DELAY_S;
+}
+
+static bool holding_gate_radius_is_valid(uint16_t radius_cm)
+{
+    return radius_cm >= S1_PRO_RADAR_MIN_HOLDING_GATE_RADIUS_CM &&
+           radius_cm <= S1_PRO_RADAR_MAX_HOLDING_GATE_RADIUS_CM;
+}
+
+static bool stationary_speed_threshold_is_valid(uint16_t threshold_cms)
+{
+    return threshold_cms <=
+               S1_PRO_RADAR_MAX_STATIONARY_SPEED_THRESHOLD_CMS;
+}
+
+static bool stationary_time_is_valid(uint16_t time_s)
+{
+    return time_s <= S1_PRO_RADAR_MAX_STATIONARY_TIME_S;
+}
+
+static bool dropout_hold_time_is_valid(uint16_t minutes)
+{
+    return minutes <= S1_PRO_RADAR_MAX_DROPOUT_HOLD_MINUTES;
 }
 
 static bool coordinate_is_valid(int16_t coordinate_cm)
@@ -132,6 +167,11 @@ static esp_err_t save_radar_settings(uint16_t range_cm,
                                      bool flip_y_axis,
                                      bool bluetooth_enabled,
                                      bool single_target,
+                                     bool holding_enabled,
+                                     uint16_t holding_gate_radius_cm,
+                                     uint16_t stationary_speed_threshold_cms,
+                                     uint16_t stationary_time_s,
+                                     uint16_t dropout_hold_minutes,
                                      const radar_zones_config_t *zones)
 {
     nvs_handle_t handle = 0;
@@ -157,6 +197,26 @@ static esp_err_t save_radar_settings(uint16_t range_cm,
     if (status == ESP_OK) {
         status = nvs_set_u8(handle, NVS_SINGLE_TARGET_KEY,
                             single_target ? 1U : 0U);
+    }
+    if (status == ESP_OK) {
+        status = nvs_set_u8(handle, NVS_HOLDING_ENABLED_KEY,
+                            holding_enabled ? 1U : 0U);
+    }
+    if (status == ESP_OK) {
+        status = nvs_set_u16(handle, NVS_HOLDING_GATE_RADIUS_KEY,
+                             holding_gate_radius_cm);
+    }
+    if (status == ESP_OK) {
+        status = nvs_set_u16(handle, NVS_STATIONARY_SPEED_KEY,
+                             stationary_speed_threshold_cms);
+    }
+    if (status == ESP_OK) {
+        status = nvs_set_u16(handle, NVS_STATIONARY_TIME_KEY,
+                             stationary_time_s);
+    }
+    if (status == ESP_OK) {
+        status = nvs_set_u16(handle, NVS_DROPOUT_HOLD_TIME_KEY,
+                             dropout_hold_minutes);
     }
     if (status == ESP_OK) {
         stored_radar_zones_t stored = {
@@ -195,6 +255,11 @@ static void persistence_task(void *argument)
         bool flip_y_axis = false;
         bool bluetooth_enabled = false;
         bool single_target = false;
+        bool holding_enabled = false;
+        uint16_t holding_gate_radius_cm = 0U;
+        uint16_t stationary_speed_threshold_cms = 0U;
+        uint16_t stationary_time_s = 0U;
+        uint16_t dropout_hold_minutes = 0U;
         radar_zones_config_t zones = {0};
         bool save_due = false;
 
@@ -206,6 +271,12 @@ static void persistence_task(void *argument)
             flip_y_axis = s_flip_y_axis;
             bluetooth_enabled = s_bluetooth_enabled;
             single_target = s_single_target;
+            holding_enabled = s_holding_enabled;
+            holding_gate_radius_cm = s_holding_gate_radius_cm;
+            stationary_speed_threshold_cms =
+                s_stationary_speed_threshold_cms;
+            stationary_time_s = s_stationary_time_s;
+            dropout_hold_minutes = s_dropout_hold_minutes;
             zones = s_zones;
             s_dirty = false;
             save_due = true;
@@ -219,7 +290,11 @@ static void persistence_task(void *argument)
         const esp_err_t status =
             save_radar_settings(range_cm, movement_threshold_cms,
                                 presence_delay_s, flip_y_axis,
-                                bluetooth_enabled, single_target, &zones);
+                                bluetooth_enabled, single_target,
+                                holding_enabled, holding_gate_radius_cm,
+                                stationary_speed_threshold_cms,
+                                stationary_time_s, dropout_hold_minutes,
+                                &zones);
         if (status != ESP_OK) {
             xSemaphoreTake(s_mutex, portMAX_DELAY);
             s_dirty = true;
@@ -278,6 +353,45 @@ void radar_settings_init(void)
             nvs_get_u8(handle, NVS_SINGLE_TARGET_KEY, &restored_bool);
         if (bool_status == ESP_OK && restored_bool <= 1U) {
             s_single_target = restored_bool != 0U;
+        }
+
+        restored_bool = 0U;
+        bool_status =
+            nvs_get_u8(handle, NVS_HOLDING_ENABLED_KEY, &restored_bool);
+        if (bool_status == ESP_OK && restored_bool <= 1U) {
+            s_holding_enabled = restored_bool != 0U;
+        }
+
+        uint16_t restored_holding_value = 0U;
+        esp_err_t holding_status = nvs_get_u16(
+            handle, NVS_HOLDING_GATE_RADIUS_KEY, &restored_holding_value);
+        if (holding_status == ESP_OK &&
+            holding_gate_radius_is_valid(restored_holding_value)) {
+            s_holding_gate_radius_cm = restored_holding_value;
+        }
+
+        restored_holding_value = 0U;
+        holding_status = nvs_get_u16(handle, NVS_STATIONARY_SPEED_KEY,
+                                     &restored_holding_value);
+        if (holding_status == ESP_OK &&
+            stationary_speed_threshold_is_valid(restored_holding_value)) {
+            s_stationary_speed_threshold_cms = restored_holding_value;
+        }
+
+        restored_holding_value = 0U;
+        holding_status = nvs_get_u16(handle, NVS_STATIONARY_TIME_KEY,
+                                     &restored_holding_value);
+        if (holding_status == ESP_OK &&
+            stationary_time_is_valid(restored_holding_value)) {
+            s_stationary_time_s = restored_holding_value;
+        }
+
+        restored_holding_value = 0U;
+        holding_status = nvs_get_u16(handle, NVS_DROPOUT_HOLD_TIME_KEY,
+                                     &restored_holding_value);
+        if (holding_status == ESP_OK &&
+            dropout_hold_time_is_valid(restored_holding_value)) {
+            s_dropout_hold_minutes = restored_holding_value;
         }
 
         stored_radar_zones_t restored_zones = {0};
@@ -441,6 +555,118 @@ bool radar_settings_set_single_target(bool enabled)
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     if (s_single_target != enabled) {
         s_single_target = enabled;
+        s_dirty = true;
+        s_changed_at_us = esp_timer_get_time();
+    }
+    xSemaphoreGive(s_mutex);
+    return true;
+}
+
+bool radar_settings_get_holding_enabled(void)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    const bool enabled = s_holding_enabled;
+    xSemaphoreGive(s_mutex);
+    return enabled;
+}
+
+bool radar_settings_set_holding_enabled(bool enabled)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_holding_enabled != enabled) {
+        s_holding_enabled = enabled;
+        s_dirty = true;
+        s_changed_at_us = esp_timer_get_time();
+    }
+    xSemaphoreGive(s_mutex);
+    return true;
+}
+
+uint16_t radar_settings_get_holding_gate_radius_cm(void)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    const uint16_t radius_cm = s_holding_gate_radius_cm;
+    xSemaphoreGive(s_mutex);
+    return radius_cm;
+}
+
+bool radar_settings_set_holding_gate_radius_cm(uint16_t radius_cm)
+{
+    if (!holding_gate_radius_is_valid(radius_cm)) {
+        return false;
+    }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_holding_gate_radius_cm != radius_cm) {
+        s_holding_gate_radius_cm = radius_cm;
+        s_dirty = true;
+        s_changed_at_us = esp_timer_get_time();
+    }
+    xSemaphoreGive(s_mutex);
+    return true;
+}
+
+uint16_t radar_settings_get_stationary_speed_threshold_cms(void)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    const uint16_t threshold_cms = s_stationary_speed_threshold_cms;
+    xSemaphoreGive(s_mutex);
+    return threshold_cms;
+}
+
+bool radar_settings_set_stationary_speed_threshold_cms(uint16_t threshold_cms)
+{
+    if (!stationary_speed_threshold_is_valid(threshold_cms)) {
+        return false;
+    }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_stationary_speed_threshold_cms != threshold_cms) {
+        s_stationary_speed_threshold_cms = threshold_cms;
+        s_dirty = true;
+        s_changed_at_us = esp_timer_get_time();
+    }
+    xSemaphoreGive(s_mutex);
+    return true;
+}
+
+uint16_t radar_settings_get_stationary_time_s(void)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    const uint16_t time_s = s_stationary_time_s;
+    xSemaphoreGive(s_mutex);
+    return time_s;
+}
+
+bool radar_settings_set_stationary_time_s(uint16_t time_s)
+{
+    if (!stationary_time_is_valid(time_s)) {
+        return false;
+    }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_stationary_time_s != time_s) {
+        s_stationary_time_s = time_s;
+        s_dirty = true;
+        s_changed_at_us = esp_timer_get_time();
+    }
+    xSemaphoreGive(s_mutex);
+    return true;
+}
+
+uint16_t radar_settings_get_dropout_hold_minutes(void)
+{
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    const uint16_t minutes = s_dropout_hold_minutes;
+    xSemaphoreGive(s_mutex);
+    return minutes;
+}
+
+bool radar_settings_set_dropout_hold_minutes(uint16_t minutes)
+{
+    if (!dropout_hold_time_is_valid(minutes)) {
+        return false;
+    }
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+    if (s_dropout_hold_minutes != minutes) {
+        s_dropout_hold_minutes = minutes;
         s_dirty = true;
         s_changed_at_us = esp_timer_get_time();
     }

@@ -11,6 +11,7 @@
 #include "driver/temperature_sensor.h"
 #include "esp_app_desc.h"
 #include "esp_timer.h"
+#include "aps/esp_zigbee_aps.h"
 #include "esp_zigbee_attribute.h"
 #include "esp_zigbee_cluster.h"
 #include "esp_zigbee_core.h"
@@ -25,8 +26,9 @@
 #include "actuator_state.h"
 #include "bme688_sensor.h"
 #include "buzzer.h"
-#include "ltr390_sensor.h"
+#include "ltrf216a_sensor.h"
 #include "presence_delay.h"
+#include "radar_holding.h"
 #include "radar_settings.h"
 #include "radar_transform.h"
 #include "radar_uart.h"
@@ -42,6 +44,10 @@ static volatile bool s_zigbee_ready;
 static volatile bool s_joined;
 static uint32_t s_last_bme_measurement_count;
 static bool s_bme_state_published;
+static bme688_snapshot_t s_last_reported_bme;
+static bool s_last_reported_bme_gas_valid;
+static bool s_last_reported_bme_bsec_valid;
+static int64_t s_last_bme_heartbeat_us;
 static uint8_t s_last_bsec_accuracy;
 static uint8_t s_last_iaq_classification;
 static bool s_radar_state_published;
@@ -59,7 +65,16 @@ static bool s_radar_controls_published;
 static bool s_last_flip_y_axis;
 static bool s_last_bluetooth_enabled;
 static bool s_last_single_target;
+static bool s_last_holding_enabled;
+static uint16_t s_last_holding_gate_radius_cm;
+static uint16_t s_last_stationary_speed_threshold_cms;
+static uint16_t s_last_stationary_time_s;
+static uint16_t s_last_dropout_hold_minutes;
 static ld2450_target_t s_last_targets[LD2450_TARGET_COUNT];
+static radar_target_state_t s_last_target_states[LD2450_TARGET_COUNT];
+static radar_holding_engine_t s_holding_engine;
+static int64_t s_last_radar_telemetry_report_us;
+static int64_t s_last_radar_heartbeat_us;
 static radar_zones_config_t s_last_zones_config;
 static bool s_zones_config_published;
 static presence_delay_state_t s_zone_presence_delay_states[RADAR_ZONE_COUNT];
@@ -70,28 +85,32 @@ static uint16_t s_pending_bme_reports[16];
 static size_t s_pending_bme_report_count;
 static uint32_t s_last_scd40_measurement_count;
 static bool s_scd40_state_published;
+static scd40_snapshot_t s_last_reported_scd40;
+static int64_t s_last_scd40_heartbeat_us;
 static bool s_scd40_temperature_offset_published;
 static uint16_t s_last_scd40_temperature_offset_centi_c;
 static uint16_t s_pending_scd40_reports[8];
 static size_t s_pending_scd40_report_count;
-static uint32_t s_last_ltr390_measurement_count;
-static bool s_ltr390_state_published;
-static uint16_t s_pending_ltr390_reports[8];
-static size_t s_pending_ltr390_report_count;
+static uint32_t s_last_ltrf216a_measurement_count;
+static bool s_ltrf216a_state_published;
+static ltrf216a_snapshot_t s_last_reported_ltrf216a;
+static int64_t s_last_ltrf216a_heartbeat_us;
+static uint16_t s_pending_ltrf216a_reports[4];
+static size_t s_pending_ltrf216a_report_count;
 static temperature_sensor_handle_t s_esp32_temperature_sensor;
 static bool s_esp32_temperature_published;
 static int16_t s_last_esp32_temperature_centi_c;
 static bool s_esp32_status_published;
 static bool s_last_esp32_connected;
+static int64_t s_last_esp32_heartbeat_us;
 static uint16_t s_pending_esp32_reports[2];
 static size_t s_pending_esp32_report_count;
 static uint8_t s_software_build_id[17];
 
-#define S1_PRO_RADAR_REPORTS_PER_PUBLISH 12U
-#define S1_PRO_BME_REPORTS_PER_PUBLISH 1U
-#define S1_PRO_SCD40_REPORTS_PER_PUBLISH 1U
-#define S1_PRO_LTR390_REPORTS_PER_PUBLISH 1U
-#define S1_PRO_ESP32_REPORTS_PER_PUBLISH 1U
+#define S1_PRO_ZCL_REPORT_FRAME_CONTROL 0x18U
+#define S1_PRO_ZCL_REPORT_ATTRIBUTES_COMMAND_ID 0x0AU
+#define S1_PRO_ZCL_REPORT_MAX_ASDU_SIZE 80U
+#define S1_PRO_ZIGBEE_NETWORK_RADIUS 15U
 
 static void set_joined(bool joined)
 {
@@ -183,6 +202,11 @@ static esp_zb_ep_list_t *create_endpoint(void)
     static bool initial_flip_y_axis;
     static bool initial_bluetooth_enabled;
     static bool initial_single_target;
+    static bool initial_holding_enabled;
+    static uint16_t initial_holding_gate_radius_cm;
+    static uint16_t initial_stationary_speed_threshold_cms;
+    static uint16_t initial_stationary_time_s;
+    static uint16_t initial_dropout_hold_minutes;
     static uint16_t initial_bme_temperature_offset_centi_c;
     static uint16_t initial_scd40_calibration_reference_ppm;
     static uint16_t initial_scd40_temperature_offset_centi_c;
@@ -197,6 +221,14 @@ static esp_zb_ep_list_t *create_endpoint(void)
     initial_flip_y_axis = radar_settings_get_flip_y_axis();
     initial_bluetooth_enabled = radar_settings_get_bluetooth_enabled();
     initial_single_target = radar_settings_get_single_target();
+    initial_holding_enabled = radar_settings_get_holding_enabled();
+    initial_holding_gate_radius_cm =
+        radar_settings_get_holding_gate_radius_cm();
+    initial_stationary_speed_threshold_cms =
+        radar_settings_get_stationary_speed_threshold_cms();
+    initial_stationary_time_s = radar_settings_get_stationary_time_s();
+    initial_dropout_hold_minutes =
+        radar_settings_get_dropout_hold_minutes();
     radar_settings_get_zones(&initial_zones);
     s_last_zones_config = initial_zones;
     s_zones_config_published = true;
@@ -257,6 +289,9 @@ static esp_zb_ep_list_t *create_endpoint(void)
                                               &initial_u16, true));
         ESP_ERROR_CHECK(add_custom_attribute(custom, S1_PRO_ATTR_TARGET_SPEED(target), ESP_ZB_ZCL_ATTR_TYPE_S16,
                                               &initial_s16, true));
+        ESP_ERROR_CHECK(add_custom_attribute(
+            custom, S1_PRO_ATTR_TARGET_STATE(target),
+            ESP_ZB_ZCL_ATTR_TYPE_8BIT_ENUM, &initial_u8, true));
     }
     ESP_ERROR_CHECK(add_custom_attribute(custom, S1_PRO_ATTR_ALL_TARGETS_COUNT, ESP_ZB_ZCL_ATTR_TYPE_U8,
                                           &initial_u8, true));
@@ -337,10 +372,9 @@ static esp_zb_ep_list_t *create_endpoint(void)
         custom, S1_PRO_ATTR_SCD40_TEMPERATURE_OFFSET,
         ESP_ZB_ZCL_ATTR_TYPE_U16,
         &initial_scd40_temperature_offset_centi_c, true));
-    ESP_ERROR_CHECK(add_custom_attribute(custom, S1_PRO_ATTR_LTR390_AMBIENT_LIGHT, ESP_ZB_ZCL_ATTR_TYPE_U32,
-                                          &initial_u32, true));
-    ESP_ERROR_CHECK(add_custom_attribute(custom, S1_PRO_ATTR_LTR390_UV_INDEX, ESP_ZB_ZCL_ATTR_TYPE_U16,
-                                          &initial_u16, true));
+    ESP_ERROR_CHECK(add_custom_attribute(
+        custom, S1_PRO_ATTR_LTRF216A_ILLUMINANCE,
+        ESP_ZB_ZCL_ATTR_TYPE_U32, &initial_u32, true));
     ESP_ERROR_CHECK(add_custom_writable_attribute(
         custom, S1_PRO_ATTR_BUZZER_POWER, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
         &initial_buzzer_power, true));
@@ -350,6 +384,22 @@ static esp_zb_ep_list_t *create_endpoint(void)
     ESP_ERROR_CHECK(add_custom_attribute(
         custom, S1_PRO_ATTR_ESP32_CONNECTED, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
         &initial_bool, true));
+    ESP_ERROR_CHECK(add_custom_writable_attribute(
+        custom, S1_PRO_ATTR_HOLDING_ENABLED, ESP_ZB_ZCL_ATTR_TYPE_BOOL,
+        &initial_holding_enabled, true));
+    ESP_ERROR_CHECK(add_custom_writable_attribute(
+        custom, S1_PRO_ATTR_HOLDING_GATE_RADIUS, ESP_ZB_ZCL_ATTR_TYPE_U16,
+        &initial_holding_gate_radius_cm, true));
+    ESP_ERROR_CHECK(add_custom_writable_attribute(
+        custom, S1_PRO_ATTR_STATIONARY_SPEED_THRESHOLD,
+        ESP_ZB_ZCL_ATTR_TYPE_U16, &initial_stationary_speed_threshold_cms,
+        true));
+    ESP_ERROR_CHECK(add_custom_writable_attribute(
+        custom, S1_PRO_ATTR_STATIONARY_TIME, ESP_ZB_ZCL_ATTR_TYPE_U16,
+        &initial_stationary_time_s, true));
+    ESP_ERROR_CHECK(add_custom_writable_attribute(
+        custom, S1_PRO_ATTR_DROPOUT_HOLD_TIME, ESP_ZB_ZCL_ATTR_TYPE_U16,
+        &initial_dropout_hold_minutes, true));
     for (uint8_t point = 0U; point < RADAR_ZONE_MAX_POINTS; ++point) {
         ESP_ERROR_CHECK(add_custom_writable_attribute(
             custom, S1_PRO_ATTR_EXCLUSION_POINT_X(point),
@@ -491,6 +541,49 @@ static esp_err_t handle_set_attribute(
     }
 
     if (message->info.cluster == S1_PRO_CUSTOM_CLUSTER_ID &&
+        message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_U16 &&
+        message->attribute.data.value != NULL) {
+        const uint16_t value = *(uint16_t *)message->attribute.data.value;
+        if (message->attribute.id == S1_PRO_ATTR_HOLDING_GATE_RADIUS) {
+            ESP_RETURN_ON_FALSE(
+                radar_settings_set_holding_gate_radius_cm(value),
+                ESP_ERR_INVALID_ARG, TAG,
+                "Radar Holding Gate Radius %u cm is outside %u-%u cm", value,
+                S1_PRO_RADAR_MIN_HOLDING_GATE_RADIUS_CM,
+                S1_PRO_RADAR_MAX_HOLDING_GATE_RADIUS_CM);
+            return ESP_OK;
+        }
+        if (message->attribute.id ==
+            S1_PRO_ATTR_STATIONARY_SPEED_THRESHOLD) {
+            ESP_RETURN_ON_FALSE(
+                radar_settings_set_stationary_speed_threshold_cms(value),
+                ESP_ERR_INVALID_ARG, TAG,
+                "Radar Stationary Speed Threshold %u cm/s is outside %u-%u cm/s",
+                value, S1_PRO_RADAR_MIN_STATIONARY_SPEED_THRESHOLD_CMS,
+                S1_PRO_RADAR_MAX_STATIONARY_SPEED_THRESHOLD_CMS);
+            return ESP_OK;
+        }
+        if (message->attribute.id == S1_PRO_ATTR_STATIONARY_TIME) {
+            ESP_RETURN_ON_FALSE(
+                radar_settings_set_stationary_time_s(value),
+                ESP_ERR_INVALID_ARG, TAG,
+                "Radar Stationary Time %u s is outside %u-%u s", value,
+                S1_PRO_RADAR_MIN_STATIONARY_TIME_S,
+                S1_PRO_RADAR_MAX_STATIONARY_TIME_S);
+            return ESP_OK;
+        }
+        if (message->attribute.id == S1_PRO_ATTR_DROPOUT_HOLD_TIME) {
+            ESP_RETURN_ON_FALSE(
+                radar_settings_set_dropout_hold_minutes(value),
+                ESP_ERR_INVALID_ARG, TAG,
+                "Radar Dropout Hold Time %u min is outside %u-%u min", value,
+                S1_PRO_RADAR_MIN_DROPOUT_HOLD_MINUTES,
+                S1_PRO_RADAR_MAX_DROPOUT_HOLD_MINUTES);
+            return ESP_OK;
+        }
+    }
+
+    if (message->info.cluster == S1_PRO_CUSTOM_CLUSTER_ID &&
         message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_S16 &&
         message->attribute.data.value != NULL) {
         const int16_t coordinate_cm =
@@ -598,6 +691,15 @@ static esp_err_t handle_set_attribute(
                 return ESP_OK;
             }
         }
+    }
+
+    if (message->info.cluster == S1_PRO_CUSTOM_CLUSTER_ID &&
+        message->attribute.id == S1_PRO_ATTR_HOLDING_ENABLED &&
+        message->attribute.data.type == ESP_ZB_ZCL_ATTR_TYPE_BOOL &&
+        message->attribute.data.value != NULL) {
+        radar_settings_set_holding_enabled(
+            *(bool *)message->attribute.data.value);
+        return ESP_OK;
     }
 
     if (message->info.cluster == S1_PRO_CUSTOM_CLUSTER_ID &&
@@ -805,73 +907,6 @@ static esp_err_t zigbee_action_handler(
     return ESP_OK;
 }
 
-static void configure_reporting(uint16_t attribute_id, bool is_32_bit, uint16_t min_interval,
-                                uint16_t max_interval)
-{
-    esp_zb_zcl_reporting_info_t info = {
-        .direction = ESP_ZB_ZCL_REPORT_DIRECTION_SEND,
-        .ep = S1_PRO_ENDPOINT_ID,
-        .cluster_id = S1_PRO_CUSTOM_CLUSTER_ID,
-        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-        .attr_id = attribute_id,
-        .u.send_info.min_interval = min_interval,
-        .u.send_info.max_interval = max_interval,
-        .u.send_info.def_min_interval = min_interval,
-        .u.send_info.def_max_interval = max_interval,
-        .dst = {
-            .short_addr = S1_PRO_COORDINATOR_SHORT_ADDRESS,
-            .endpoint = S1_PRO_COORDINATOR_ENDPOINT_ID,
-            .profile_id = ESP_ZB_AF_HA_PROFILE_ID,
-        },
-        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
-    };
-    if (is_32_bit) {
-        info.u.send_info.delta.u32 = 0;
-    } else {
-        info.u.send_info.delta.u16 = 0;
-    }
-    ESP_ERROR_CHECK(esp_zb_zcl_update_reporting_info(&info));
-}
-
-static void configure_all_reporting(void)
-{
-    for (uint8_t target = 0; target < 3; ++target) {
-        configure_reporting(S1_PRO_ATTR_TARGET_X(target), false, 1, 1);
-        configure_reporting(S1_PRO_ATTR_TARGET_Y(target), false, 1, 1);
-        configure_reporting(S1_PRO_ATTR_TARGET_DISTANCE(target), false, 1, 1);
-        configure_reporting(S1_PRO_ATTR_TARGET_SPEED(target), false, 1, 1);
-    }
-    configure_reporting(S1_PRO_ATTR_ALL_TARGETS_COUNT, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_ANY_PRESENCE, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_DETECTION_RANGE, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_ANY_MOVEMENT, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_ANY_MOVEMENT_THRESHOLD, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_ANY_PRESENCE_DELAY, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_RADAR_FLIP_Y_AXIS, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_RADAR_BLUETOOTH, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_RADAR_SINGLE_TARGET, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_BME_TEMPERATURE, false, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BME_HUMIDITY, false, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BME_PRESSURE, true, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BME_GAS_RESISTANCE, true, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BME_CO2_EQUIVALENT, false, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BME_VOC_EQUIVALENT, false, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BME_BSEC_ACCURACY, false, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BME_IAQ, false, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BME_IAQ_CLASSIFICATION, false, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BME_TEMPERATURE_OFFSET, false, 3, 30);
-    configure_reporting(S1_PRO_ATTR_SCD40_CO2, false, 5, 30);
-    configure_reporting(S1_PRO_ATTR_SCD40_TEMPERATURE, false, 5, 30);
-    configure_reporting(S1_PRO_ATTR_SCD40_HUMIDITY, false, 5, 30);
-    configure_reporting(S1_PRO_ATTR_SCD40_CALIBRATION_REFERENCE, false, 5, 30);
-    configure_reporting(S1_PRO_ATTR_SCD40_TEMPERATURE_OFFSET, false, 5, 30);
-    configure_reporting(S1_PRO_ATTR_LTR390_AMBIENT_LIGHT, true, 3, 30);
-    configure_reporting(S1_PRO_ATTR_LTR390_UV_INDEX, false, 3, 30);
-    configure_reporting(S1_PRO_ATTR_BUZZER_POWER, false, 1, 1);
-    configure_reporting(S1_PRO_ATTR_ESP32_TEMPERATURE, false, 10, 60);
-    configure_reporting(S1_PRO_ATTR_ESP32_CONNECTED, false, 10, 60);
-}
-
 static bool set_attribute(uint16_t id, void *value)
 {
     return esp_zb_zcl_set_attribute_val(S1_PRO_ENDPOINT_ID, S1_PRO_CUSTOM_CLUSTER_ID,
@@ -879,23 +914,76 @@ static bool set_attribute(uint16_t id, void *value)
            ESP_ZB_ZCL_STATUS_SUCCESS;
 }
 
-static bool report_attribute(uint16_t id)
+static void aps_data_confirm_handler(esp_zb_apsde_data_confirm_t confirm)
 {
-    esp_zb_zcl_report_attr_cmd_t command = {
-        .zcl_basic_cmd = {
-            .dst_addr_u.addr_short = S1_PRO_COORDINATOR_SHORT_ADDRESS,
-            .dst_endpoint = S1_PRO_COORDINATOR_ENDPOINT_ID,
-            .src_endpoint = S1_PRO_ENDPOINT_ID,
-        },
-        .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
-        .clusterID = S1_PRO_CUSTOM_CLUSTER_ID,
-        .manuf_specific = 0,
-        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
-        .dis_defalut_resp = 1,
-        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,
-        .attributeID = id,
+    if (confirm.status != 0U) {
+        ESP_LOGW(TAG, "Batched APS report failed with status 0x%02x",
+                 confirm.status);
+    }
+}
+
+static bool report_attributes(const uint16_t *ids, size_t count,
+                              size_t *reported_count)
+{
+    static uint8_t transaction_sequence;
+    uint8_t asdu[S1_PRO_ZCL_REPORT_MAX_ASDU_SIZE] = {
+        S1_PRO_ZCL_REPORT_FRAME_CONTROL,
+        transaction_sequence,
+        S1_PRO_ZCL_REPORT_ATTRIBUTES_COMMAND_ID,
     };
-    return esp_zb_zcl_report_attr_cmd_req(&command) == ESP_OK;
+    size_t asdu_length = 3U;
+    size_t records = 0U;
+
+    while (records < count) {
+        const uint16_t id = ids[records];
+        esp_zb_zcl_attr_t *attribute = esp_zb_zcl_get_attribute(
+            S1_PRO_ENDPOINT_ID, S1_PRO_CUSTOM_CLUSTER_ID,
+            ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, id);
+        if (attribute == NULL || attribute->data_p == NULL) {
+            ESP_LOGE(TAG, "Unable to report unknown attribute 0x%04x", id);
+            return false;
+        }
+
+        const uint16_t value_size = esp_zb_zcl_get_attribute_size(
+            attribute->type, (uint8_t *)attribute->data_p);
+        const size_t record_size = 3U + value_size;
+        if (value_size == 0U || asdu_length + record_size > sizeof(asdu)) {
+            break;
+        }
+
+        asdu[asdu_length++] = (uint8_t)(id & 0xFFU);
+        asdu[asdu_length++] = (uint8_t)(id >> 8U);
+        asdu[asdu_length++] = attribute->type;
+        memcpy(&asdu[asdu_length], attribute->data_p, value_size);
+        asdu_length += value_size;
+        ++records;
+    }
+
+    if (records == 0U) {
+        ESP_LOGE(TAG, "Attribute report does not fit in one APS frame");
+        return false;
+    }
+
+    esp_zb_apsde_data_req_t request = {
+        .dst_addr_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+        .dst_addr.addr_short = S1_PRO_COORDINATOR_SHORT_ADDRESS,
+        .dst_endpoint = S1_PRO_COORDINATOR_ENDPOINT_ID,
+        .profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .cluster_id = S1_PRO_CUSTOM_CLUSTER_ID,
+        .src_endpoint = S1_PRO_ENDPOINT_ID,
+        .asdu_length = asdu_length,
+        .asdu = asdu,
+        .tx_options = ESP_ZB_APSDE_TX_OPT_ACK_TX,
+        .use_alias = false,
+        .radius = S1_PRO_ZIGBEE_NETWORK_RADIUS,
+    };
+    if (esp_zb_aps_data_request(&request) != ESP_OK) {
+        return false;
+    }
+
+    ++transaction_sequence;
+    *reported_count = records;
+    return true;
 }
 
 static void queue_unique_report(uint16_t *queue, size_t *count, size_t capacity,
@@ -933,11 +1021,12 @@ static void queue_scd40_report(uint16_t id)
         id);
 }
 
-static void queue_ltr390_report(uint16_t id)
+static void queue_ltrf216a_report(uint16_t id)
 {
     queue_unique_report(
-        s_pending_ltr390_reports, &s_pending_ltr390_report_count,
-        sizeof(s_pending_ltr390_reports) / sizeof(s_pending_ltr390_reports[0]),
+        s_pending_ltrf216a_reports, &s_pending_ltrf216a_report_count,
+        sizeof(s_pending_ltrf216a_reports) /
+            sizeof(s_pending_ltrf216a_reports[0]),
         id);
 }
 
@@ -949,23 +1038,23 @@ static void queue_esp32_report(uint16_t id)
         id);
 }
 
-static bool flush_pending_reports(uint16_t *queue, size_t *count,
-                                  size_t maximum_reports)
+static bool flush_pending_reports(uint16_t *queue, size_t *count)
 {
-    bool success = true;
-    size_t sent = 0;
-    while (s_joined && sent < maximum_reports && *count > 0) {
-        if (!report_attribute(queue[0])) {
-            success = false;
-            break;
-        }
-        --(*count);
-        if (*count > 0) {
-            memmove(&queue[0], &queue[1], *count * sizeof(queue[0]));
-        }
-        ++sent;
+    if (!s_joined || *count == 0U) {
+        return true;
     }
-    return success;
+
+    size_t reported_count = 0U;
+    if (!report_attributes(queue, *count, &reported_count)) {
+        return false;
+    }
+
+    *count -= reported_count;
+    if (*count > 0U) {
+        memmove(&queue[0], &queue[reported_count],
+                *count * sizeof(queue[0]));
+    }
+    return true;
 }
 
 static bool publish_zones_configuration(const radar_zones_config_t *config)
@@ -1011,14 +1100,33 @@ static bool publish_zones_configuration(const radar_zones_config_t *config)
     return success;
 }
 
+static uint32_t difference_u32(uint32_t first, uint32_t second)
+{
+    return first >= second ? first - second : second - first;
+}
+
+static uint32_t difference_s16(int16_t first, int16_t second)
+{
+    const int32_t difference = (int32_t)first - (int32_t)second;
+    return (uint32_t)(difference >= 0 ? difference : -difference);
+}
+
+static bool period_elapsed(int64_t now_us, int64_t last_us,
+                           uint32_t period_ms)
+{
+    return now_us - last_us >= (int64_t)period_ms * 1000;
+}
+
 static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
                              const bme688_snapshot_t *bme, bool bme_fresh,
                              const scd40_snapshot_t *scd40, bool scd40_fresh,
-                             const ltr390_snapshot_t *ltr390, bool ltr390_fresh,
+                             const ltrf216a_snapshot_t *ltrf216a,
+                             bool ltrf216a_fresh,
                              uint16_t detection_range_cm,
                              uint16_t movement_threshold_cms,
                              uint16_t presence_delay_s, bool flip_y_axis,
                              bool bluetooth_enabled, bool single_target,
+                             const radar_holding_config_t *holding_config,
                              const radar_zones_config_t *zones_config,
                              bool esp32_temperature_valid,
                              int16_t esp32_temperature_centi_c,
@@ -1061,26 +1169,93 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
         single_target != s_last_single_target) {
         queue_radar_report(S1_PRO_ATTR_RADAR_SINGLE_TARGET);
     }
+    bool holding_enabled = holding_config->enabled;
+    uint16_t holding_gate_radius_cm = holding_config->gate_radius_cm;
+    uint16_t stationary_speed_threshold_cms =
+        holding_config->stationary_speed_threshold_cms;
+    uint16_t stationary_time_s = holding_config->stationary_time_s;
+    uint16_t dropout_hold_minutes = holding_config->dropout_hold_minutes;
+    success &= set_attribute(S1_PRO_ATTR_HOLDING_ENABLED, &holding_enabled);
+    success &= set_attribute(S1_PRO_ATTR_HOLDING_GATE_RADIUS,
+                             &holding_gate_radius_cm);
+    success &= set_attribute(S1_PRO_ATTR_STATIONARY_SPEED_THRESHOLD,
+                             &stationary_speed_threshold_cms);
+    success &= set_attribute(S1_PRO_ATTR_STATIONARY_TIME,
+                             &stationary_time_s);
+    success &= set_attribute(S1_PRO_ATTR_DROPOUT_HOLD_TIME,
+                             &dropout_hold_minutes);
+    if (!s_radar_controls_published ||
+        holding_config->enabled != s_last_holding_enabled) {
+        queue_radar_report(S1_PRO_ATTR_HOLDING_ENABLED);
+    }
+    if (!s_radar_controls_published ||
+        holding_config->gate_radius_cm != s_last_holding_gate_radius_cm) {
+        queue_radar_report(S1_PRO_ATTR_HOLDING_GATE_RADIUS);
+    }
+    if (!s_radar_controls_published ||
+        holding_config->stationary_speed_threshold_cms !=
+            s_last_stationary_speed_threshold_cms) {
+        queue_radar_report(S1_PRO_ATTR_STATIONARY_SPEED_THRESHOLD);
+    }
+    if (!s_radar_controls_published ||
+        holding_config->stationary_time_s != s_last_stationary_time_s) {
+        queue_radar_report(S1_PRO_ATTR_STATIONARY_TIME);
+    }
+    if (!s_radar_controls_published ||
+        holding_config->dropout_hold_minutes !=
+            s_last_dropout_hold_minutes) {
+        queue_radar_report(S1_PRO_ATTR_DROPOUT_HOLD_TIME);
+    }
 
+    const bool radar_telemetry_due =
+        !s_radar_state_published ||
+        period_elapsed(now_us, s_last_radar_telemetry_report_us,
+                       S1_PRO_RADAR_TELEMETRY_PERIOD_MS);
+    const bool radar_heartbeat_due =
+        !s_radar_state_published ||
+        period_elapsed(now_us, s_last_radar_heartbeat_us,
+                       S1_PRO_REPORT_HEARTBEAT_PERIOD_MS);
     uint8_t target_count = 0;
     bool any_movement = false;
     radar_zone_target_t zone_targets[LD2450_TARGET_COUNT] = {0};
-    for (uint8_t target = 0; target < 3; ++target) {
-        bool present = fresh && ld2450_target_within_range(
-                                    &snapshot->frame.targets[target],
-                                    detection_range_cm);
-        ld2450_target_t published_target = {0};
-        if (present) {
-            published_target = snapshot->frame.targets[target];
-            published_target.x_mm = radar_transform_x_mm(
-                published_target.x_mm, flip_y_axis);
-            if (radar_target_is_excluded(zones_config,
-                                         published_target.x_mm,
-                                         published_target.y_mm)) {
-                present = false;
-                published_target = (ld2450_target_t){0};
-            }
+    ld2450_target_t holding_measurements[LD2450_TARGET_COUNT] = {0};
+    bool force_drop[LD2450_TARGET_COUNT] = {0};
+    for (uint8_t target = 0U; target < LD2450_TARGET_COUNT; ++target) {
+        const ld2450_target_t *raw_target =
+            &snapshot->frame.targets[target];
+        if (!fresh || !raw_target->present) {
+            continue;
         }
+        if (!ld2450_target_within_range(raw_target, detection_range_cm)) {
+            force_drop[target] = true;
+            continue;
+        }
+        holding_measurements[target] = *raw_target;
+        holding_measurements[target].x_mm = radar_transform_x_mm(
+            holding_measurements[target].x_mm, flip_y_axis);
+        if (radar_target_is_excluded(
+                zones_config, holding_measurements[target].x_mm,
+                holding_measurements[target].y_mm)) {
+            holding_measurements[target] = (ld2450_target_t){0};
+            force_drop[target] = true;
+        }
+    }
+
+    if (s_radar_controls_published &&
+        (flip_y_axis != s_last_flip_y_axis ||
+         single_target != s_last_single_target)) {
+        radar_holding_init(&s_holding_engine);
+    }
+    radar_holding_result_t holding_results[LD2450_TARGET_COUNT] = {0};
+    radar_holding_update(&s_holding_engine, holding_measurements, fresh,
+                         force_drop, holding_config, (uint64_t)now_us / 1000U,
+                         holding_results);
+
+    for (uint8_t target = 0U; target < LD2450_TARGET_COUNT; ++target) {
+        ld2450_target_t published_target = holding_results[target].target;
+        const bool present = published_target.present;
+        uint8_t published_state =
+            (uint8_t)holding_results[target].state;
         zone_targets[target] = (radar_zone_target_t){
             .present = present,
             .x_mm = published_target.x_mm,
@@ -1102,27 +1277,49 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
                                  &published_target.distance_mm);
         success &= set_attribute(S1_PRO_ATTR_TARGET_SPEED(target),
                                  &published_target.speed_cms);
-        if (!s_radar_state_published ||
-            present != s_last_targets[target].present ||
-            published_target.x_mm != s_last_targets[target].x_mm) {
+        success &= set_attribute(S1_PRO_ATTR_TARGET_STATE(target),
+                                 &published_state);
+        const bool presence_changed =
+            !s_radar_state_published ||
+            present != s_last_targets[target].present;
+        if (presence_changed || radar_heartbeat_due ||
+            (radar_telemetry_due &&
+             difference_s16(published_target.x_mm,
+                            s_last_targets[target].x_mm) >=
+                 S1_PRO_RADAR_POSITION_CHANGE_MM)) {
             queue_radar_report(S1_PRO_ATTR_TARGET_X(target));
+            s_last_targets[target].x_mm = published_target.x_mm;
         }
-        if (!s_radar_state_published ||
-            present != s_last_targets[target].present ||
-            published_target.y_mm != s_last_targets[target].y_mm) {
+        if (presence_changed || radar_heartbeat_due ||
+            (radar_telemetry_due &&
+             difference_s16(published_target.y_mm,
+                            s_last_targets[target].y_mm) >=
+                 S1_PRO_RADAR_POSITION_CHANGE_MM)) {
             queue_radar_report(S1_PRO_ATTR_TARGET_Y(target));
+            s_last_targets[target].y_mm = published_target.y_mm;
         }
-        if (!s_radar_state_published ||
-            present != s_last_targets[target].present ||
-            published_target.distance_mm != s_last_targets[target].distance_mm) {
+        if (presence_changed || radar_heartbeat_due ||
+            (radar_telemetry_due &&
+             difference_u32(published_target.distance_mm,
+                            s_last_targets[target].distance_mm) >=
+                 S1_PRO_RADAR_DISTANCE_CHANGE_MM)) {
             queue_radar_report(S1_PRO_ATTR_TARGET_DISTANCE(target));
+            s_last_targets[target].distance_mm = published_target.distance_mm;
         }
-        if (!s_radar_state_published ||
-            present != s_last_targets[target].present ||
-            published_target.speed_cms != s_last_targets[target].speed_cms) {
+        if (presence_changed || radar_heartbeat_due ||
+            (radar_telemetry_due &&
+             difference_s16(published_target.speed_cms,
+                            s_last_targets[target].speed_cms) >=
+                 S1_PRO_RADAR_SPEED_CHANGE_CMS)) {
             queue_radar_report(S1_PRO_ATTR_TARGET_SPEED(target));
+            s_last_targets[target].speed_cms = published_target.speed_cms;
         }
-        s_last_targets[target] = published_target;
+        if (radar_heartbeat_due || !s_radar_state_published ||
+            holding_results[target].state != s_last_target_states[target]) {
+            queue_radar_report(S1_PRO_ATTR_TARGET_STATE(target));
+        }
+        s_last_targets[target].present = present;
+        s_last_target_states[target] = holding_results[target].state;
     }
 
     radar_zone_result_t zone_results[RADAR_ZONE_COUNT];
@@ -1142,17 +1339,17 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
                                  &zone_results[zone].movement);
         success &= set_attribute(S1_PRO_ATTR_ZONE_TARGET_COUNT(zone),
                                  &zone_results[zone].target_count);
-        if (!s_radar_state_published ||
+        if (radar_heartbeat_due || !s_radar_state_published ||
             zone_results[zone].presence !=
                 s_last_zone_results[zone].presence) {
             queue_radar_report(S1_PRO_ATTR_ZONE_PRESENCE(zone));
         }
-        if (!s_radar_state_published ||
+        if (radar_heartbeat_due || !s_radar_state_published ||
             zone_results[zone].movement !=
                 s_last_zone_results[zone].movement) {
             queue_radar_report(S1_PRO_ATTR_ZONE_MOVEMENT(zone));
         }
-        if (!s_radar_state_published ||
+        if (radar_heartbeat_due || !s_radar_state_published ||
             zone_results[zone].target_count !=
                 s_last_zone_results[zone].target_count) {
             queue_radar_report(S1_PRO_ATTR_ZONE_TARGET_COUNT(zone));
@@ -1166,13 +1363,16 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
     success &= set_attribute(S1_PRO_ATTR_ALL_TARGETS_COUNT, &target_count);
     success &= set_attribute(S1_PRO_ATTR_ANY_PRESENCE, &any_presence);
     success &= set_attribute(S1_PRO_ATTR_ANY_MOVEMENT, &any_movement);
-    if (!s_radar_state_published || target_count != s_last_target_count) {
+    if (radar_heartbeat_due || !s_radar_state_published ||
+        target_count != s_last_target_count) {
         queue_radar_report(S1_PRO_ATTR_ALL_TARGETS_COUNT);
     }
-    if (!s_radar_state_published || any_presence != s_last_any_presence) {
+    if (radar_heartbeat_due || !s_radar_state_published ||
+        any_presence != s_last_any_presence) {
         queue_radar_report(S1_PRO_ATTR_ANY_PRESENCE);
     }
-    if (!s_radar_state_published || any_movement != s_last_any_movement) {
+    if (radar_heartbeat_due || !s_radar_state_published ||
+        any_movement != s_last_any_movement) {
         queue_radar_report(S1_PRO_ATTR_ANY_MOVEMENT);
     }
     s_last_target_count = target_count;
@@ -1187,12 +1387,28 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
     s_last_flip_y_axis = flip_y_axis;
     s_last_bluetooth_enabled = bluetooth_enabled;
     s_last_single_target = single_target;
+    s_last_holding_enabled = holding_config->enabled;
+    s_last_holding_gate_radius_cm = holding_config->gate_radius_cm;
+    s_last_stationary_speed_threshold_cms =
+        holding_config->stationary_speed_threshold_cms;
+    s_last_stationary_time_s = holding_config->stationary_time_s;
+    s_last_dropout_hold_minutes = holding_config->dropout_hold_minutes;
     s_radar_controls_published = true;
+    if (radar_telemetry_due) {
+        s_last_radar_telemetry_report_us = now_us;
+    }
+    if (radar_heartbeat_due) {
+        s_last_radar_heartbeat_us = now_us;
+    }
     s_radar_state_published = true;
 
+    const bool esp32_heartbeat_due =
+        !s_esp32_status_published ||
+        period_elapsed(now_us, s_last_esp32_heartbeat_us,
+                       S1_PRO_REPORT_HEARTBEAT_PERIOD_MS);
     bool esp32_connected = s_joined;
     success &= set_attribute(S1_PRO_ATTR_ESP32_CONNECTED, &esp32_connected);
-    if (!s_esp32_status_published ||
+    if (esp32_heartbeat_due || !s_esp32_status_published ||
         esp32_connected != s_last_esp32_connected) {
         queue_esp32_report(S1_PRO_ATTR_ESP32_CONNECTED);
     }
@@ -1202,19 +1418,27 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
     if (esp32_temperature_valid) {
         success &= set_attribute(S1_PRO_ATTR_ESP32_TEMPERATURE,
                                  &esp32_temperature_centi_c);
-        if (!s_esp32_temperature_published ||
-            esp32_temperature_centi_c !=
-                s_last_esp32_temperature_centi_c) {
+        if (esp32_heartbeat_due || !s_esp32_temperature_published ||
+            difference_s16(esp32_temperature_centi_c,
+                           s_last_esp32_temperature_centi_c) >=
+                S1_PRO_TEMPERATURE_CHANGE_CENTI_C) {
             queue_esp32_report(S1_PRO_ATTR_ESP32_TEMPERATURE);
+            s_last_esp32_temperature_centi_c = esp32_temperature_centi_c;
         }
-        s_last_esp32_temperature_centi_c = esp32_temperature_centi_c;
         s_esp32_temperature_published = true;
+    }
+    if (esp32_heartbeat_due) {
+        s_last_esp32_heartbeat_us = now_us;
     }
 
     const bool bme_new_data = bme_fresh &&
                               (!s_bme_state_published ||
                                bme->measurement_count != s_last_bme_measurement_count);
     if (bme_new_data) {
+        const bool heartbeat_due =
+            !s_bme_state_published ||
+            period_elapsed(now_us, s_last_bme_heartbeat_us,
+                           S1_PRO_REPORT_HEARTBEAT_PERIOD_MS);
         bool gas_valid = bme_fresh && bme->gas_valid;
         bool bsec_valid = bme_fresh && bme->bsec_valid;
         int16_t temperature = bme->temperature_centi_c;
@@ -1223,20 +1447,44 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
         success &= set_attribute(S1_PRO_ATTR_BME_TEMPERATURE, &temperature);
         success &= set_attribute(S1_PRO_ATTR_BME_HUMIDITY, &humidity);
         success &= set_attribute(S1_PRO_ATTR_BME_PRESSURE, &pressure);
-        queue_bme_report(S1_PRO_ATTR_BME_TEMPERATURE);
-        queue_bme_report(S1_PRO_ATTR_BME_HUMIDITY);
-        queue_bme_report(S1_PRO_ATTR_BME_PRESSURE);
+        if (heartbeat_due ||
+            difference_s16(temperature,
+                           s_last_reported_bme.temperature_centi_c) >=
+                S1_PRO_TEMPERATURE_CHANGE_CENTI_C) {
+            queue_bme_report(S1_PRO_ATTR_BME_TEMPERATURE);
+            s_last_reported_bme.temperature_centi_c = temperature;
+        }
+        if (heartbeat_due ||
+            difference_u32(humidity,
+                           s_last_reported_bme.humidity_centi_percent) >=
+                S1_PRO_HUMIDITY_CHANGE_CENTI_PERCENT) {
+            queue_bme_report(S1_PRO_ATTR_BME_HUMIDITY);
+            s_last_reported_bme.humidity_centi_percent = humidity;
+        }
+        if (heartbeat_due ||
+            difference_u32(pressure, s_last_reported_bme.pressure_pa) >=
+                S1_PRO_PRESSURE_CHANGE_PA) {
+            queue_bme_report(S1_PRO_ATTR_BME_PRESSURE);
+            s_last_reported_bme.pressure_pa = pressure;
+        }
 
         if (gas_valid) {
             uint32_t gas_resistance = bme->gas_resistance_ohm;
             success &= set_attribute(S1_PRO_ATTR_BME_GAS_RESISTANCE,
                                      &gas_resistance);
-            queue_bme_report(S1_PRO_ATTR_BME_GAS_RESISTANCE);
+            if (heartbeat_due || !s_last_reported_bme_gas_valid ||
+                difference_u32(
+                    gas_resistance,
+                    s_last_reported_bme.gas_resistance_ohm) >=
+                    S1_PRO_GAS_RESISTANCE_CHANGE_OHM) {
+                queue_bme_report(S1_PRO_ATTR_BME_GAS_RESISTANCE);
+                s_last_reported_bme.gas_resistance_ohm = gas_resistance;
+            }
         }
         uint8_t bsec_accuracy = bme->bsec_accuracy;
         success &=
             set_attribute(S1_PRO_ATTR_BME_BSEC_ACCURACY, &bsec_accuracy);
-        if (!s_bme_state_published ||
+        if (heartbeat_due || !s_bme_state_published ||
             bsec_accuracy != s_last_bsec_accuracy) {
             queue_bme_report(S1_PRO_ATTR_BME_BSEC_ACCURACY);
         }
@@ -1252,18 +1500,43 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
             success &= set_attribute(S1_PRO_ATTR_BME_IAQ, &iaq);
             success &= set_attribute(S1_PRO_ATTR_BME_IAQ_CLASSIFICATION,
                                      &iaq_classification);
-            queue_bme_report(S1_PRO_ATTR_BME_CO2_EQUIVALENT);
-            queue_bme_report(S1_PRO_ATTR_BME_VOC_EQUIVALENT);
-            queue_bme_report(S1_PRO_ATTR_BME_IAQ);
-            if (!s_bme_state_published ||
+            if (heartbeat_due || !s_last_reported_bme_bsec_valid ||
+                difference_u32(
+                    co2_equivalent,
+                    s_last_reported_bme.co2_equivalent_ppm) >=
+                    S1_PRO_CO2_CHANGE_PPM) {
+                queue_bme_report(S1_PRO_ATTR_BME_CO2_EQUIVALENT);
+                s_last_reported_bme.co2_equivalent_ppm = co2_equivalent;
+            }
+            if (heartbeat_due || !s_last_reported_bme_bsec_valid ||
+                difference_u32(
+                    voc_equivalent,
+                    s_last_reported_bme.voc_equivalent_centi_ppm) >=
+                    S1_PRO_VOC_CHANGE_CENTI_PPM) {
+                queue_bme_report(S1_PRO_ATTR_BME_VOC_EQUIVALENT);
+                s_last_reported_bme.voc_equivalent_centi_ppm =
+                    voc_equivalent;
+            }
+            if (heartbeat_due || !s_last_reported_bme_bsec_valid ||
+                difference_u32(iaq, s_last_reported_bme.iaq_index) >=
+                    S1_PRO_IAQ_CHANGE) {
+                queue_bme_report(S1_PRO_ATTR_BME_IAQ);
+                s_last_reported_bme.iaq_index = iaq;
+            }
+            if (heartbeat_due || !s_last_reported_bme_bsec_valid ||
                 iaq_classification != s_last_iaq_classification) {
                 queue_bme_report(S1_PRO_ATTR_BME_IAQ_CLASSIFICATION);
             }
         }
+        s_last_reported_bme_gas_valid = gas_valid;
+        s_last_reported_bme_bsec_valid = bsec_valid;
         s_bme_state_published = true;
         s_last_bsec_accuracy = bme->bsec_accuracy;
         s_last_iaq_classification = bme->iaq_classification;
         s_last_bme_measurement_count = bme->measurement_count;
+        if (heartbeat_due) {
+            s_last_bme_heartbeat_us = now_us;
+        }
     }
 
     const bool scd40_new_data =
@@ -1271,6 +1544,10 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
         (!s_scd40_state_published ||
          scd40->measurement_count != s_last_scd40_measurement_count);
     if (scd40_new_data) {
+        const bool heartbeat_due =
+            !s_scd40_state_published ||
+            period_elapsed(now_us, s_last_scd40_heartbeat_us,
+                           S1_PRO_REPORT_HEARTBEAT_PERIOD_MS);
         uint16_t co2 = scd40->co2_ppm;
         int16_t temperature = scd40->temperature_centi_c;
         uint16_t humidity = scd40->humidity_centi_percent;
@@ -1278,11 +1555,32 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
         success &=
             set_attribute(S1_PRO_ATTR_SCD40_TEMPERATURE, &temperature);
         success &= set_attribute(S1_PRO_ATTR_SCD40_HUMIDITY, &humidity);
-        queue_scd40_report(S1_PRO_ATTR_SCD40_CO2);
-        queue_scd40_report(S1_PRO_ATTR_SCD40_TEMPERATURE);
-        queue_scd40_report(S1_PRO_ATTR_SCD40_HUMIDITY);
+        if (heartbeat_due ||
+            difference_u32(co2, s_last_reported_scd40.co2_ppm) >=
+                S1_PRO_CO2_CHANGE_PPM) {
+            queue_scd40_report(S1_PRO_ATTR_SCD40_CO2);
+            s_last_reported_scd40.co2_ppm = co2;
+        }
+        if (heartbeat_due ||
+            difference_s16(temperature,
+                           s_last_reported_scd40.temperature_centi_c) >=
+                S1_PRO_TEMPERATURE_CHANGE_CENTI_C) {
+            queue_scd40_report(S1_PRO_ATTR_SCD40_TEMPERATURE);
+            s_last_reported_scd40.temperature_centi_c = temperature;
+        }
+        if (heartbeat_due ||
+            difference_u32(
+                humidity,
+                s_last_reported_scd40.humidity_centi_percent) >=
+                S1_PRO_HUMIDITY_CHANGE_CENTI_PERCENT) {
+            queue_scd40_report(S1_PRO_ATTR_SCD40_HUMIDITY);
+            s_last_reported_scd40.humidity_centi_percent = humidity;
+        }
         s_scd40_state_published = true;
         s_last_scd40_measurement_count = scd40->measurement_count;
+        if (heartbeat_due) {
+            s_last_scd40_heartbeat_us = now_us;
+        }
     }
 
     if (scd40->temperature_offset_valid &&
@@ -1299,38 +1597,44 @@ static void publish_snapshot(const radar_snapshot_t *snapshot, bool fresh,
         s_scd40_temperature_offset_published = true;
     }
 
-    const bool ltr390_new_data =
-        ltr390_fresh &&
-        (!s_ltr390_state_published ||
-         ltr390->measurement_count != s_last_ltr390_measurement_count);
-    if (ltr390_new_data) {
-        uint32_t ambient_light = ltr390->ambient_light_centilux;
-        uint16_t uv_index = ltr390->uv_index_centi;
-        success &= set_attribute(S1_PRO_ATTR_LTR390_AMBIENT_LIGHT,
-                                 &ambient_light);
-        success &= set_attribute(S1_PRO_ATTR_LTR390_UV_INDEX, &uv_index);
-        queue_ltr390_report(S1_PRO_ATTR_LTR390_AMBIENT_LIGHT);
-        queue_ltr390_report(S1_PRO_ATTR_LTR390_UV_INDEX);
-        s_ltr390_state_published = true;
-        s_last_ltr390_measurement_count = ltr390->measurement_count;
+    const bool ltrf216a_new_data =
+        ltrf216a_fresh &&
+        (!s_ltrf216a_state_published ||
+         ltrf216a->measurement_count != s_last_ltrf216a_measurement_count);
+    if (ltrf216a_new_data) {
+        const bool heartbeat_due =
+            !s_ltrf216a_state_published ||
+            period_elapsed(now_us, s_last_ltrf216a_heartbeat_us,
+                           S1_PRO_REPORT_HEARTBEAT_PERIOD_MS);
+        uint32_t illuminance = ltrf216a->illuminance_centilux;
+        success &= set_attribute(S1_PRO_ATTR_LTRF216A_ILLUMINANCE,
+                                 &illuminance);
+        if (heartbeat_due ||
+            difference_u32(
+                illuminance,
+                s_last_reported_ltrf216a.illuminance_centilux) >=
+                S1_PRO_AMBIENT_LIGHT_CHANGE_CENTILUX) {
+            queue_ltrf216a_report(S1_PRO_ATTR_LTRF216A_ILLUMINANCE);
+            s_last_reported_ltrf216a.illuminance_centilux = illuminance;
+        }
+        s_ltrf216a_state_published = true;
+        s_last_ltrf216a_measurement_count = ltrf216a->measurement_count;
+        if (heartbeat_due) {
+            s_last_ltrf216a_heartbeat_us = now_us;
+        }
     }
 
     if (s_joined) {
         success &= flush_pending_reports(s_pending_radar_reports,
-                                         &s_pending_radar_report_count,
-                                         S1_PRO_RADAR_REPORTS_PER_PUBLISH);
+                                         &s_pending_radar_report_count);
         success &= flush_pending_reports(s_pending_bme_reports,
-                                         &s_pending_bme_report_count,
-                                         S1_PRO_BME_REPORTS_PER_PUBLISH);
+                                         &s_pending_bme_report_count);
         success &= flush_pending_reports(s_pending_scd40_reports,
-                                         &s_pending_scd40_report_count,
-                                         S1_PRO_SCD40_REPORTS_PER_PUBLISH);
-        success &= flush_pending_reports(s_pending_ltr390_reports,
-                                         &s_pending_ltr390_report_count,
-                                         S1_PRO_LTR390_REPORTS_PER_PUBLISH);
+                                         &s_pending_scd40_report_count);
+        success &= flush_pending_reports(s_pending_ltrf216a_reports,
+                                         &s_pending_ltrf216a_report_count);
         success &= flush_pending_reports(s_pending_esp32_reports,
-                                         &s_pending_esp32_report_count,
-                                         S1_PRO_ESP32_REPORTS_PER_PUBLISH);
+                                         &s_pending_esp32_report_count);
     }
     (void)success;
 }
@@ -1381,8 +1685,8 @@ static void publisher_task(void *argument)
         bme688_sensor_get_snapshot(&bme);
         scd40_snapshot_t scd40;
         scd40_sensor_get_snapshot(&scd40);
-        ltr390_snapshot_t ltr390;
-        ltr390_sensor_get_snapshot(&ltr390);
+        ltrf216a_snapshot_t ltrf216a;
+        ltrf216a_sensor_get_snapshot(&ltrf216a);
         const int64_t now_us = esp_timer_get_time();
         if (now_us - last_esp32_temperature_read_us >=
             (int64_t)S1_PRO_ESP32_TEMPERATURE_PERIOD_MS * 1000) {
@@ -1398,10 +1702,13 @@ static void publisher_task(void *argument)
             scd40.valid ? (now_us - scd40.received_at_us) / 1000 : INT64_MAX;
         const bool scd40_fresh =
             scd40.valid && scd40_age_ms <= S1_PRO_SCD40_STALE_MS;
-        const int64_t ltr390_age_ms =
-            ltr390.valid ? (now_us - ltr390.received_at_us) / 1000 : INT64_MAX;
-        const bool ltr390_fresh =
-            ltr390.valid && ltr390_age_ms <= S1_PRO_LTR390_STALE_MS;
+        const int64_t ltrf216a_age_ms =
+            ltrf216a.valid
+                ? (now_us - ltrf216a.received_at_us) / 1000
+                : INT64_MAX;
+        const bool ltrf216a_fresh =
+            ltrf216a.valid &&
+            ltrf216a_age_ms <= S1_PRO_LTRF216A_STALE_MS;
         const uint16_t detection_range_cm =
             radar_settings_get_detection_range_cm();
         const uint16_t movement_threshold_cms =
@@ -1412,15 +1719,26 @@ static void publisher_task(void *argument)
         const bool bluetooth_enabled =
             radar_settings_get_bluetooth_enabled();
         const bool single_target = radar_settings_get_single_target();
+        const radar_holding_config_t holding_config = {
+            .enabled = radar_settings_get_holding_enabled(),
+            .gate_radius_cm =
+                radar_settings_get_holding_gate_radius_cm(),
+            .stationary_speed_threshold_cms =
+                radar_settings_get_stationary_speed_threshold_cms(),
+            .stationary_time_s = radar_settings_get_stationary_time_s(),
+            .dropout_hold_minutes =
+                radar_settings_get_dropout_hold_minutes(),
+            .detection_range_cm = detection_range_cm,
+        };
         radar_zones_config_t zones_config;
         radar_settings_get_zones(&zones_config);
 
         esp_zb_lock_acquire(portMAX_DELAY);
         publish_snapshot(&snapshot, fresh, &bme, bme_fresh, &scd40,
-                         scd40_fresh, &ltr390, ltr390_fresh,
+                         scd40_fresh, &ltrf216a, ltrf216a_fresh,
                          detection_range_cm, movement_threshold_cms,
                          presence_delay_s, flip_y_axis, bluetooth_enabled,
-                         single_target, &zones_config,
+                         single_target, &holding_config, &zones_config,
                          esp32_temperature_valid,
                          esp32_temperature_centi_c, now_us);
         esp_zb_lock_release();
@@ -1441,11 +1759,11 @@ static void zigbee_main_task(void *argument)
     };
 
     esp_zb_init(&config);
+    esp_zb_aps_data_confirm_handler_register(aps_data_confirm_handler);
     esp_zb_set_rx_on_when_idle(true);
     esp_zb_ep_list_t *endpoint = create_endpoint();
     ESP_ERROR_CHECK(esp_zb_device_register(endpoint));
     esp_zb_core_action_handler_register(zigbee_action_handler);
-    configure_all_reporting();
     ESP_ERROR_CHECK(esp_zb_set_primary_network_channel_set(ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK));
     ESP_ERROR_CHECK(esp_zb_start(false));
     s_zigbee_ready = true;
@@ -1454,6 +1772,7 @@ static void zigbee_main_task(void *argument)
 
 void zigbee_device_start(void)
 {
+    radar_holding_init(&s_holding_engine);
     presence_delay_init(&s_presence_delay_state);
     for (uint8_t zone = 0U; zone < RADAR_ZONE_COUNT; ++zone) {
         presence_delay_init(&s_zone_presence_delay_states[zone]);

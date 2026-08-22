@@ -9,11 +9,12 @@ It connects directly to your Zigbee network. There is no Wi-Fi setup, device IP 
 ## What the S1 Pro can do
 
 - Track up to three people with the LD2450 mmWave radar
+- Keep qualified stationary targets present during unexpected radar dropouts
 - Show target position, distance, and speed
 - Detect presence and movement up to 6 metres
 - Create three detection zones and one exclusion zone
 - Measure temperature, humidity, air pressure, gas resistance, IAQ, equivalent CO2, and equivalent VOC with the BME688
-- Measure ambient light and UV index with the LTR390
+- Measure ambient illuminance in lux with the LTR-F216A
 - Measure true CO2, temperature, and humidity with the optional SCD40 module
 - Control the WS2812 RGB LED from Home Assistant
 - Switch the MLT8530 buzzer on and off from Home Assistant
@@ -133,8 +134,6 @@ Install the converter before pairing the S1 Pro.
 
 If the S1 Pro was previously connected to another Zigbee network, hold the physical **BOOT** button for at least five seconds while permit-join is active.
 
-When migrating a coordinator from ZHA, first create a ZHA network backup, stop or disable ZHA, and only then start Zigbee2MQTT. Reset and pair the S1 Pro after Zigbee2MQTT and its external converter are running.
-
 ## Configure zones with the Home Assistant app
 
 Use the official **Sensy-One Zone Editor** app to configure zones visually. You do not need to enter all polygon coordinates manually.
@@ -179,6 +178,23 @@ The most important settings are available on the S1 Pro device page in Home Assi
 
 The presence delay only affects **Any Presence**. Target information and **All Targets Count** return to zero immediately when the target disappears.
 
+## Anti-drop holding engine
+
+The holding engine prevents presence flicker when the LD2450 temporarily loses
+a person who is sitting very still. Each target progresses through **Moving**,
+**Stationary**, and **Holding** states. Only a target that has remained
+stationary for the configured time is retained after a dropout. A moving target,
+a target entering the exclusion zone, or a target leaving the radar range or
+field of view is removed immediately.
+
+The controls are available in both Zigbee2MQTT and ZHA:
+
+- **Radar Holding Engine** enables or disables anti-drop holding.
+- **Radar Holding Gate Radius** restarts qualification if a target jumps farther than this distance.
+- **Radar Stationary Speed Threshold** defines when a target is considered stationary.
+- **Radar Stationary Time** defines how long a target must remain stationary before it can be held.
+- **Radar Dropout Hold Time** defines the maximum retention time after a dropout.
+
 ## Air-quality sensors
 
 ### BME688
@@ -201,9 +217,17 @@ For calibration:
 
 The SCD40 also provides a temperature offset and factory-reset button.
 
+### LTR-F216A
+
+The built-in LTR-F216A measures ambient illuminance in lux. This hardware is
+an ambient-light sensor only, so the firmware does not expose a UV-index
+entity.
+
 ## LED and buzzer
 
-Use **WS2812 Led** in Home Assistant to select the LED colour, brightness, or power state.
+Use **WS2812 LED** under **Configuration** in Home Assistant to select the LED
+colour, brightness, or power state. The diagnostic **Link Quality** entity is
+enabled by default in both ZHA and Zigbee2MQTT.
 
 When Zigbee is disconnected, the LED temporarily breathes purple. Your selected LED settings are not lost and return after Zigbee reconnects.
 
@@ -224,13 +248,13 @@ After an ESP32 factory reset, pair the S1 Pro with Home Assistant again.
 
 The S1 Pro is delivered with firmware installed. USB flashing is only needed for an update or recovery.
 
-The current firmware version is **v1.1.0**.
+The current firmware version is **v1.1.1**.
 
-1. Download [`S1_Pro_Multi_Sense_Zigbee_v1.1.0_factory.bin`](firmware/S1_Pro_Multi_Sense_Zigbee_v1.1.0_factory.bin).
+1. Download [`S1_Pro_Multi_Sense_Zigbee_v1.1.1_factory.bin`](firmware/S1_Pro_Multi_Sense_Zigbee_v1.1.1_factory.bin).
 2. Open [ESPHome Web](https://web.esphome.io/) in Chrome or Edge on a desktop computer.
 3. Connect the S1 Pro using a USB data cable and the bottom-facing USB-C port.
 4. Select **Connect** and choose the S1 Pro serial port.
-5. Select **Install** and choose the downloaded `factory.bin`.
+5. Select **Install** and choose the downloaded `S1_Pro_Multi_Sense_Zigbee_v1.1.1_factory.bin`.
 6. Wait until flashing and verification are complete.
 
 ESPHome Web is used only to install the firmware file. No ESPHome setup is needed.

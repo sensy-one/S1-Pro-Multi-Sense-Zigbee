@@ -6,9 +6,10 @@ idf_component_register(
         "buzzer.c"
         "factory_reset.c"
         "i2c_bus.c"
-        "ltr390_sensor.c"
+        "ltrf216a_sensor.c"
         "ld2450_command_protocol.c"
         "presence_delay.c"
+        "radar_holding.c"
         "radar_settings.c"
         "radar_transform.c"
         "radar_uart.c"
@@ -26,7 +27,7 @@ idf_component_register(
         esp_timer
         ld2450_parser
         led_strip
-        ltr390_protocol
+        ltrf216a_protocol
         nvs_flash
         scd4x_protocol
 )

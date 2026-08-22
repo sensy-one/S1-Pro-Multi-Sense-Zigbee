@@ -4,7 +4,7 @@
 #include "buzzer.h"
 #include "factory_reset.h"
 #include "i2c_bus.h"
-#include "ltr390_sensor.h"
+#include "ltrf216a_sensor.h"
 #include "nvs_flash.h"
 #include "radar_uart.h"
 #include "radar_settings.h"
@@ -43,7 +43,7 @@ void app_main(void)
     radar_uart_start();
     bme688_sensor_start();
     scd40_sensor_start();
-    ltr390_sensor_start();
+    ltrf216a_sensor_start();
     system_control_start();
     zigbee_device_start();
     factory_reset_button_start();

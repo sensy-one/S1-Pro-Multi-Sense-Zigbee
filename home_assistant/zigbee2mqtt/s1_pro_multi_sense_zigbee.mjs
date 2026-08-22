@@ -1,5 +1,4 @@
 import {Zcl} from "zigbee-herdsman";
-import * as exposes from "zigbee-herdsman-converters/lib/exposes";
 import * as m from "zigbee-herdsman-converters/lib/modernExtend";
 
 const ENDPOINT = 10;
@@ -24,6 +23,7 @@ for (let target = 1; target <= 3; target++) {
     addAttribute(`target_${target}_y`, base + 1, Zcl.DataType.INT16);
     addAttribute(`target_${target}_distance`, base + 2, Zcl.DataType.UINT16);
     addAttribute(`target_${target}_speed`, base + 3, Zcl.DataType.INT16);
+    addAttribute(`target_${target}_state`, base + 4, Zcl.DataType.ENUM8);
 }
 
 addAttribute("all_targets_count", 0x00f3, Zcl.DataType.UINT8);
@@ -59,11 +59,16 @@ addAttribute("scd40_forced_calibration", 0x0205, Zcl.DataType.BOOLEAN, true);
 addAttribute("scd40_factory_reset", 0x0206, Zcl.DataType.BOOLEAN, true);
 addAttribute("scd40_temperature_offset", 0x0207, Zcl.DataType.UINT16, true);
 
-addAttribute("ltr390_ambient_light", 0x0300, Zcl.DataType.UINT32);
-addAttribute("ltr390_uv_index", 0x0301, Zcl.DataType.UINT16);
+addAttribute("ltrf216a_illuminance", 0x0300, Zcl.DataType.UINT32);
 addAttribute("buzzer_power", 0x0400, Zcl.DataType.BOOLEAN, true);
 addAttribute("esp32_temperature", 0x0500, Zcl.DataType.INT16);
 addAttribute("esp32_connected", 0x0501, Zcl.DataType.BOOLEAN);
+
+addAttribute("holding_enabled", 0x0700, Zcl.DataType.BOOLEAN, true);
+addAttribute("holding_gate_radius", 0x0701, Zcl.DataType.UINT16, true);
+addAttribute("stationary_speed_threshold", 0x0702, Zcl.DataType.UINT16, true);
+addAttribute("stationary_time", 0x0703, Zcl.DataType.UINT16, true);
+addAttribute("dropout_hold_time", 0x0704, Zcl.DataType.UINT16, true);
 
 for (let point = 1; point <= 8; point++) {
     const base = 0x0600 + (point - 1) * 2;
@@ -162,7 +167,7 @@ const led = m.light({
     powerOnBehavior: false,
 });
 for (const expose of led.exposes ?? []) {
-    expose.withLabel("WS2812 Led").withHomeAssistant({
+    expose.withLabel("WS2812 LED").withHomeAssistant({
         entityCategory: "config",
         icon: "mdi:led-strip-variant",
     });
@@ -220,6 +225,15 @@ for (let target = 1; target <= 3; target++) {
         unit: "cm/s",
         precision: 0,
     }, {icon: "mdi:speedometer"}));
+    extend.push(withHomeAssistant(m.enumLookup({
+        name: `target_${target}_state`,
+        cluster: CLUSTER_NAME,
+        attribute: `target_${target}_state`,
+        access: "STATE",
+        description: `Holding-engine state of target ${target}`,
+        label: `Target ${target} state`,
+        lookup: {"No target": 0, Moving: 1, Stationary: 2, Holding: 3},
+    }), {icon: "mdi:account-clock"}));
 }
 
 extend.push(
@@ -275,6 +289,58 @@ extend.push(
         valueMax: 300,
         valueStep: 1,
     }, {icon: "mdi:timer-outline"}),
+    binary({
+        name: "holding_enabled",
+        attribute: "holding_enabled",
+        access: "ALL",
+        description: "Keep qualified stationary targets active during unexpected radar dropouts",
+        label: "Radar Holding Engine",
+        entityCategory: "config",
+    }, {entityCategory: "config", icon: "mdi:account-clock"}),
+    numeric({
+        name: "holding_gate_radius",
+        attribute: "holding_gate_radius",
+        access: "ALL",
+        description: "Maximum target displacement before the stationary timer restarts",
+        label: "Radar Holding Gate Radius",
+        unit: "cm",
+        valueMin: 5,
+        valueMax: 300,
+        valueStep: 1,
+    }, {icon: "mdi:crosshairs-gps"}),
+    numeric({
+        name: "stationary_speed_threshold",
+        attribute: "stationary_speed_threshold",
+        access: "ALL",
+        description: "Maximum speed at which a target is considered stationary",
+        label: "Radar Stationary Speed Threshold",
+        unit: "cm/s",
+        valueMin: 0,
+        valueMax: 100,
+        valueStep: 1,
+    }, {icon: "mdi:speedometer-slow"}),
+    numeric({
+        name: "stationary_time",
+        attribute: "stationary_time",
+        access: "ALL",
+        description: "Time a target must remain stationary before it can be held",
+        label: "Radar Stationary Time",
+        unit: "s",
+        valueMin: 0,
+        valueMax: 120,
+        valueStep: 1,
+    }, {icon: "mdi:timer-sand"}),
+    numeric({
+        name: "dropout_hold_time",
+        attribute: "dropout_hold_time",
+        access: "ALL",
+        description: "Maximum time to retain a qualified target after a radar dropout",
+        label: "Radar Dropout Hold Time",
+        unit: "min",
+        valueMin: 0,
+        valueMax: 60,
+        valueStep: 1,
+    }, {icon: "mdi:timer-lock-outline"}),
 );
 
 for (const [name, label, description] of [
@@ -337,8 +403,7 @@ extend.push(
     commandButton("scd40_factory_reset", "Factory-reset the SCD40", "SCD40 Factory Reset", "mdi:factory"),
     numeric({name: "scd40_temperature_offset", attribute: "scd40_temperature_offset", access: "ALL", description: "SCD40 temperature correction", label: "SCD40 Temp Offset", unit: "°C", scale: 100, precision: 2, valueMin: 0, valueMax: 30, valueStep: 0.01}, {icon: "mdi:thermometer-plus"}),
 
-    numeric({name: "ltr390_ambient_light", attribute: "ltr390_ambient_light", description: "LTR390 ambient light", label: "LTR390 Ambient Light", unit: "lx", scale: 100, precision: 2}, {icon: "mdi:brightness-5"}),
-    numeric({name: "ltr390_uv_index", attribute: "ltr390_uv_index", description: "LTR390 ultraviolet index", label: "LTR390 UV Index", unit: "UV index", scale: 100, precision: 2}, {icon: "mdi:weather-sunset"}),
+    numeric({name: "ltrf216a_illuminance", attribute: "ltrf216a_illuminance", description: "LTR-F216A ambient illuminance", label: "LTR-F216A Illuminance", unit: "lx", scale: 100, precision: 2}, {icon: "mdi:brightness-5"}),
     binary({name: "buzzer_power", attribute: "buzzer_power", access: "ALL", description: "MLT8530 buzzer power", label: "MLT8530 Buzzer", entityCategory: "config"}, {entityCategory: "config", icon: "mdi:surround-sound"}),
 );
 
@@ -415,6 +480,28 @@ function overrideHaDiscoveryPayload(payload, options) {
 
     const entityId = payload.default_entity_id;
     if (typeof entityId !== "string") return;
+
+    if (entityId.endsWith("_linkquality")) {
+        payload.enabled_by_default = true;
+        payload.name = "Link Quality";
+        payload.entity_category = "diagnostic";
+        payload.icon = "mdi:signal";
+    }
+
+    if (entityId.startsWith("light.")) {
+        payload.name = "WS2812 LED";
+        payload.entity_category = "config";
+        const currentObjectId = entityId.slice("light.".length);
+        if (!currentObjectId.endsWith("_ws2812_led")) {
+            payload.default_entity_id = `light.${currentObjectId}_ws2812_led`;
+            payload.object_id = `${currentObjectId}_ws2812_led`;
+        }
+    }
+
+    if (entityId.endsWith("_ltrf216a_illuminance")) {
+        payload.device_class = "illuminance";
+        payload.state_class = "measurement";
+    }
 
     // Match the ZHA quirk: editable numeric settings use text input boxes.
     if (entityId.startsWith("number.")) payload.mode = "box";
