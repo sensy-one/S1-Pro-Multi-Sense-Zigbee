@@ -1,6 +1,6 @@
 # Sensy-One S1 Pro Multi Sense (Zigbee)
 
-The **S1 Pro Multi Sense (Zigbee)** is an all-in-one presence and indoor climate sensor made for Home Assistant.
+The **S1 Pro Multi Sense (Zigbee)** is an all-in-one presence and indoor climate sensor for Homey Pro and Home Assistant.
 
 ![Sensy-One S1 Pro Multi Sense (Zigbee)](S1Pro_orbit_pcb_front_view.png)
 
@@ -16,27 +16,34 @@ It connects directly to your Zigbee network. There is no Wi-Fi setup, device IP 
 - Measure temperature, humidity, air pressure, gas resistance, IAQ, equivalent CO2, and equivalent VOC with the BME688
 - Measure ambient illuminance in lux with the LTR-F216A
 - Measure true CO2, temperature, and humidity with the optional SCD40 module
-- Control the WS2812 RGB LED from Home Assistant
-- Switch the MLT8530 buzzer on and off from Home Assistant
+- Control the WS2812 RGB LED from Homey Pro or Home Assistant
+- Switch the MLT8530 buzzer on and off from Homey Pro or Home Assistant
 
 Radar information is updated every 0.5 seconds. Settings such as zones, offsets, radar options, LED state, and buzzer state are remembered after a restart.
 
-The S1 Pro supports both **ZHA** and **Zigbee2MQTT** in Home Assistant. Choose one integration for your coordinator; ZHA and Zigbee2MQTT cannot use the same coordinator at the same time.
+Available readings and controls differ by platform; Homey shows live target positions in its zone editor.
 
-## Before you start
+## Getting started
 
-You need:
+You need a 5 V USB-C power supply and either Homey Pro or Home Assistant with a Zigbee coordinator. Firmware is preinstalled. A sensor can join one Zigbee network at a time.
 
-- Home Assistant
-- A supported Zigbee coordinator assigned to either ZHA or Zigbee2MQTT
-- The matching S1 Pro integration file from this repository
-- A 5 V USB-C power supply
+### Homey Pro
 
-Devices supplied by Sensy-One already have the firmware installed.
+1. Install the [SENSY-ONE app](https://homey.app/en-nl/app/com.sensy-one/SENSY-ONE/test/) on Homey Pro and power S1 Pro Zigbee via USB-C.
+2. In Homey, go to **Devices → + → SENSY-ONE → S1 Pro Zigbee**.
+3. Hold **BOOT** for at least five seconds to start pairing. This disconnects the sensor from any previous Zigbee network.
 
-## Option A: use ZHA
+Measurements and presence are available in Flows and Insights. No Home Assistant, converter or extra bridge is needed.
 
-### A1. Install Zigbee Home Automation
+The app is currently under review and can already be used through the test link above.
+
+### Home Assistant
+
+Use either ZHA or Zigbee2MQTT with a compatible coordinator. Install the matching integration file below before pairing. Both integrations cannot use the same coordinator at the same time.
+
+#### Option A: ZHA
+
+**A1. Install Zigbee Home Automation**
 
 Skip this step if ZHA is already working in Home Assistant.
 
@@ -47,7 +54,7 @@ Skip this step if ZHA is already working in Home Assistant.
 
 More information is available in the [official Home Assistant ZHA guide](https://www.home-assistant.io/integrations/zha/).
 
-### A2. Install the S1 Pro quirk
+**A2. Install the S1 Pro quirk**
 
 The quirk tells Home Assistant which sensors and controls the S1 Pro provides. Install it before pairing the device.
 
@@ -73,7 +80,7 @@ Home Assistant File Editor may show `/homeassistant` instead of `/config`. This 
 
 If your `configuration.yaml` already has a `zha:` section, add only the `custom_quirks_path` line underneath it. Do not add a second `zha:` section.
 
-### A3. Pair the S1 Pro with ZHA
+**A3. Pair the S1 Pro with ZHA**
 
 1. Open **Settings → Devices & services → Zigbee Home Automation**.
 2. Select **Add device**.
@@ -84,9 +91,9 @@ The LED breathes purple while the S1 Pro is looking for or reconnecting to a Zig
 
 If the S1 Pro was previously connected to another Zigbee network, hold the physical **BOOT** button for at least five seconds and then try pairing again.
 
-## Option B: use Zigbee2MQTT
+#### Option B: Zigbee2MQTT
 
-### B1. Install Zigbee2MQTT
+**B1. Install Zigbee2MQTT**
 
 Skip this step if Zigbee2MQTT is already working in Home Assistant.
 
@@ -104,7 +111,7 @@ Skip this step if Zigbee2MQTT is already working in Home Assistant.
 
 See the [official Zigbee2MQTT Home Assistant app guide](https://github.com/zigbee2mqtt/hassio-zigbee2mqtt) for coordinator-specific setup.
 
-### B2. Install the S1 Pro external converter
+**B2. Install the S1 Pro external converter**
 
 Install the converter before pairing the S1 Pro.
 
@@ -125,7 +132,7 @@ Install the converter before pairing the S1 Pro.
 4. Restart Zigbee2MQTT.
 5. Open **Settings → Dev console → External converters** in Zigbee2MQTT and confirm that `s1_pro_multi_sense_zigbee.mjs` is loaded.
 
-### B3. Pair the S1 Pro with Zigbee2MQTT
+**B3. Pair the S1 Pro with Zigbee2MQTT**
 
 1. Open the Zigbee2MQTT frontend from Home Assistant.
 2. Select **Permit join (All)**.
@@ -134,11 +141,17 @@ Install the converter before pairing the S1 Pro.
 
 If the S1 Pro was previously connected to another Zigbee network, hold the physical **BOOT** button for at least five seconds while permit-join is active.
 
-## Configure zones with the Home Assistant app
+## Configure zones
+
+### Homey Pro
+
+Open **Settings → Apps → SENSY-ONE → App settings** in Homey. Select your sensor, draw the zones and save. Presence and target-count readings appear for each configured detection zone.
+
+### Home Assistant
 
 Use the official **Sensy-One Zone Editor** app to configure zones visually. You do not need to enter all polygon coordinates manually.
 
-### Install the Zone Editor
+**Install the Zone Editor**
 
 1. Open **Settings → Apps → App store** in Home Assistant.
 2. Open the three-dot menu and select **Repositories**.
@@ -152,7 +165,7 @@ Use the official **Sensy-One Zone Editor** app to configure zones visually. You 
 5. Select **Install** and then **Start**.
 6. Optionally enable **Show in sidebar**.
 
-### Create your zones
+**Create your zones**
 
 1. Open **Sensy-One Zone Editor** from Home Assistant.
 2. Select your S1 Pro sensor.
@@ -167,7 +180,7 @@ Targets inside the Exclusion Zone are ignored. Their target data is set to zero,
 
 ## Useful radar settings
 
-The most important settings are available on the S1 Pro device page in Home Assistant:
+In Homey, open the sensor's advanced settings. In Home Assistant, use the controls on its device page. Labels may differ by platform:
 
 - **Detection Range** limits how far the radar should detect targets.
 - **Any Movement Threshold** determines how fast a target must move before movement is detected. The default is 15 cm/s.
@@ -203,13 +216,13 @@ The built-in BME688 shows temperature, humidity, air pressure, gas resistance, I
 
 Equivalent CO2 and equivalent VOC are calculated air-quality estimates. They are not direct CO2 or VOC measurements. The IAQ sensor needs time to stabilize after first use or a factory reset.
 
-Use **BME688 Temp Offset** in Home Assistant if you want to fine-tune the temperature reading.
+Adjust the BME688 temperature offset in Homey's advanced device settings or with **BME688 Temp Offset** in Home Assistant.
 
 ### Optional SCD40
 
 The optional SCD40 module measures true CO2, temperature, and humidity. If the module is not installed, its Home Assistant entities can remain unknown. This is normal.
 
-For calibration:
+For calibration, use the SCD40 controls in Homey's advanced device settings or on the Home Assistant device page:
 
 1. Place the sensor in stable air with a known CO2 concentration.
 2. Enter that value under **SCD40 Calibration Reference**.
@@ -224,6 +237,10 @@ an ambient-light sensor only, so the firmware does not expose a UV-index
 entity.
 
 ## LED and buzzer
+
+**Homey Pro:** use the sensor's Flow actions to set LED power, colour and brightness or to sound the buzzer. These controls do not appear as a light device.
+
+**Home Assistant:**
 
 Use **WS2812 LED** under **Configuration** in Home Assistant to select the LED
 colour, brightness, or power state. The diagnostic **Link Quality** entity is
@@ -242,7 +259,7 @@ Use **MLT8530 Buzzer** to switch the buzzer on or off.
 - **ESP32 Factory Reset** erases the saved settings and Zigbee connection.
 - Holding **BOOT** for five seconds clears the Zigbee connection so the device can be paired again.
 
-After an ESP32 factory reset, pair the S1 Pro with Home Assistant again.
+In Homey, restart and reset controls are in the sensor's advanced settings. After an ESP32 factory reset, pair it with your chosen platform again.
 
 ## Firmware update or recovery
 
@@ -267,12 +284,13 @@ A factory installation can erase saved settings and the Zigbee connection. Pair 
 
 ### The S1 Pro is not discovered
 
-- Make sure ZHA is searching for new devices or Zigbee2MQTT permit-join is active.
+- In Homey, start adding **SENSY-ONE → S1 Pro Zigbee**. In Home Assistant, start ZHA discovery or enable Zigbee2MQTT permit-join.
 - Hold BOOT for at least five seconds and try again.
 - Pair close to the Zigbee coordinator.
 
 ### Sensors or controls are missing
 
+- In Homey, check the SENSY-ONE app version. Zone readings appear after you configure the zones; LED and buzzer controls are Flow actions.
 - With ZHA, check the quirk location and the `custom_quirks_path` setting.
 - With Zigbee2MQTT, check that `enable_external_js` is enabled and the external converter is listed as loaded.
 - Restart Home Assistant for ZHA or restart Zigbee2MQTT when using its external converter.
