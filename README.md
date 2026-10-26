@@ -220,7 +220,7 @@ Adjust the BME688 temperature offset in Homey's advanced device settings or with
 
 ### Optional SCD40
 
-The optional SCD40 module measures true CO2, temperature, and humidity. If the module is not installed, its Home Assistant entities can remain unknown. This is normal.
+The optional SCD40 module measures true CO2, temperature, and humidity. All seven SCD40 entities are disabled by default in Home Assistant, including the temperature offset, calibration reference, calibration button, and factory-reset button. Enable the entities you need on the Home Assistant device page when the add-on is installed. Without the module, enabled measurement entities can remain unknown.
 
 For calibration, use the SCD40 controls in Homey's advanced device settings or on the Home Assistant device page:
 

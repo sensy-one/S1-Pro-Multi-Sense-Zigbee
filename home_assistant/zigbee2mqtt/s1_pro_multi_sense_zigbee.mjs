@@ -122,7 +122,7 @@ function binary(args, homeassistant) {
     }), homeassistant);
 }
 
-function commandButton(name, description, label, icon) {
+function commandButton(name, description, label, icon, homeassistant = {}) {
     return withHomeAssistant(m.enumLookup({
         name,
         cluster: CLUSTER_NAME,
@@ -132,7 +132,7 @@ function commandButton(name, description, label, icon) {
         label,
         lookup: {PRESS: true},
         entityCategory: "config",
-    }), {entityCategory: "config", icon});
+    }), {entityCategory: "config", icon, ...homeassistant});
 }
 
 function initialAttributeRead() {
@@ -396,13 +396,13 @@ extend.push(
     }), {icon: "mdi:air-filter"}),
     numeric({name: "bme_temperature_offset", attribute: "bme_temperature_offset", access: "ALL", description: "BME688 temperature correction", label: "BME688 Temp Offset", unit: "°C", scale: 100, precision: 2, valueMin: 0, valueMax: 30, valueStep: 0.01}, {icon: "mdi:thermometer-plus"}),
 
-    numeric({name: "scd40_co2", attribute: "scd40_co2", description: "SCD40 measured CO2 concentration", label: "SCD40 CO2", unit: "ppm", precision: 0}, {icon: "mdi:molecule-co2"}),
-    numeric({name: "scd40_temperature", attribute: "scd40_temperature", description: "SCD40 temperature", label: "SCD40 temperature", unit: "°C", scale: 100, precision: 2}, {icon: "mdi:thermometer"}),
-    numeric({name: "scd40_humidity", attribute: "scd40_humidity", description: "SCD40 relative humidity", label: "SCD40 humidity", unit: "%", scale: 100, precision: 2}, {icon: "mdi:water-percent"}),
-    numeric({name: "scd40_calibration_reference", attribute: "scd40_calibration_reference", access: "ALL", description: "CO2 reference value for forced calibration", label: "SCD40 Calibration Reference", unit: "ppm", valueMin: 400, valueMax: 2000, valueStep: 1}, {icon: "mdi:tune"}),
-    commandButton("scd40_forced_calibration", "Run SCD40 forced calibration", "SCD40 Forced Calibration", "mdi:tune"),
-    commandButton("scd40_factory_reset", "Factory-reset the SCD40", "SCD40 Factory Reset", "mdi:factory"),
-    numeric({name: "scd40_temperature_offset", attribute: "scd40_temperature_offset", access: "ALL", description: "SCD40 temperature correction", label: "SCD40 Temp Offset", unit: "°C", scale: 100, precision: 2, valueMin: 0, valueMax: 30, valueStep: 0.01}, {icon: "mdi:thermometer-plus"}),
+    numeric({name: "scd40_co2", attribute: "scd40_co2", description: "SCD40 measured CO2 concentration", label: "SCD40 CO2", unit: "ppm", precision: 0}, {enabledByDefault: false, icon: "mdi:molecule-co2"}),
+    numeric({name: "scd40_temperature", attribute: "scd40_temperature", description: "SCD40 temperature", label: "SCD40 temperature", unit: "°C", scale: 100, precision: 2}, {enabledByDefault: false, icon: "mdi:thermometer"}),
+    numeric({name: "scd40_humidity", attribute: "scd40_humidity", description: "SCD40 relative humidity", label: "SCD40 humidity", unit: "%", scale: 100, precision: 2}, {enabledByDefault: false, icon: "mdi:water-percent"}),
+    numeric({name: "scd40_calibration_reference", attribute: "scd40_calibration_reference", access: "ALL", description: "CO2 reference value for forced calibration", label: "SCD40 Calibration Reference", unit: "ppm", valueMin: 400, valueMax: 2000, valueStep: 1}, {enabledByDefault: false, icon: "mdi:tune"}),
+    commandButton("scd40_forced_calibration", "Run SCD40 forced calibration", "SCD40 Forced Calibration", "mdi:tune", {enabledByDefault: false}),
+    commandButton("scd40_factory_reset", "Factory-reset the SCD40", "SCD40 Factory Reset", "mdi:factory", {enabledByDefault: false}),
+    numeric({name: "scd40_temperature_offset", attribute: "scd40_temperature_offset", access: "ALL", description: "SCD40 temperature correction", label: "SCD40 Temp Offset", unit: "°C", scale: 100, precision: 2, valueMin: 0, valueMax: 30, valueStep: 0.01}, {enabledByDefault: false, icon: "mdi:thermometer-plus"}),
 
     numeric({name: "ltrf216a_illuminance", attribute: "ltrf216a_illuminance", description: "LTR-F216A ambient illuminance", label: "LTR-F216A Illuminance", unit: "lx", scale: 100, precision: 2}, {icon: "mdi:brightness-5"}),
     binary({name: "buzzer_power", attribute: "buzzer_power", access: "ALL", description: "MLT8530 buzzer power", label: "MLT8530 Buzzer", entityCategory: "config"}, {entityCategory: "config", icon: "mdi:surround-sound"}),
