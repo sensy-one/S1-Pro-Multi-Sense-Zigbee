@@ -1,4 +1,5 @@
 #include "zigbee_device.h"
+#include "zigbee_ota.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -116,6 +117,7 @@ static void set_joined(bool joined)
 {
     s_joined = joined;
     rgb_led_set_zigbee_connected(joined);
+    zigbee_ota_network_changed(joined);
 }
 
 static void commissioning_retry_callback(uint8_t mode_mask)
@@ -194,6 +196,7 @@ static esp_zb_ep_list_t *create_endpoint(void)
     static uint8_t initial_u8;
     static uint16_t initial_u16;
     static uint32_t initial_u32;
+    static uint8_t hardware_version = S1_PRO_OTA_HARDWARE_VERSION;
     static bool initial_bool;
     static bool initial_buzzer_power;
     static uint16_t initial_detection_range_cm;
@@ -262,6 +265,8 @@ static esp_zb_ep_list_t *create_endpoint(void)
                                                   (void *)S1_PRO_MODEL_NAME));
     ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(
         basic, ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID, s_software_build_id));
+    ESP_ERROR_CHECK(esp_zb_basic_cluster_add_attr(
+        basic, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &hardware_version));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_basic_cluster(clusters, basic, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_groups_cluster(
         clusters, esp_zb_groups_cluster_create(&light_config.groups_cfg),
@@ -448,6 +453,7 @@ static esp_zb_ep_list_t *create_endpoint(void)
             ESP_ZB_ZCL_ATTR_TYPE_U8, &initial_u8, true));
     }
     ESP_ERROR_CHECK(esp_zb_cluster_list_add_custom_cluster(clusters, custom, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE));
+    ESP_ERROR_CHECK(zigbee_ota_add_cluster(clusters));
 
     const esp_zb_endpoint_config_t endpoint_config = {
         .endpoint = S1_PRO_ENDPOINT_ID,
@@ -903,6 +909,12 @@ static esp_err_t zigbee_action_handler(
     if (callback_id == ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID) {
         return handle_set_attribute(
             (const esp_zb_zcl_set_attr_value_message_t *)message);
+    }
+    if (callback_id == ESP_ZB_CORE_OTA_UPGRADE_VALUE_CB_ID) {
+        return zigbee_ota_handle_upgrade(message);
+    }
+    if (callback_id == ESP_ZB_CORE_OTA_UPGRADE_QUERY_IMAGE_RESP_CB_ID) {
+        return zigbee_ota_handle_query(message);
     }
     return ESP_OK;
 }
@@ -1734,13 +1746,15 @@ static void publisher_task(void *argument)
         radar_settings_get_zones(&zones_config);
 
         esp_zb_lock_acquire(portMAX_DELAY);
-        publish_snapshot(&snapshot, fresh, &bme, bme_fresh, &scd40,
-                         scd40_fresh, &ltrf216a, ltrf216a_fresh,
-                         detection_range_cm, movement_threshold_cms,
-                         presence_delay_s, flip_y_axis, bluetooth_enabled,
-                         single_target, &holding_config, &zones_config,
-                         esp32_temperature_valid,
-                         esp32_temperature_centi_c, now_us);
+        if (!zigbee_ota_is_active()) {
+            publish_snapshot(&snapshot, fresh, &bme, bme_fresh, &scd40,
+                             scd40_fresh, &ltrf216a, ltrf216a_fresh,
+                             detection_range_cm, movement_threshold_cms,
+                             presence_delay_s, flip_y_axis, bluetooth_enabled,
+                             single_target, &holding_config, &zones_config,
+                             esp32_temperature_valid,
+                             esp32_temperature_centi_c, now_us);
+        }
         esp_zb_lock_release();
 
     }
@@ -1766,6 +1780,7 @@ static void zigbee_main_task(void *argument)
     esp_zb_core_action_handler_register(zigbee_action_handler);
     ESP_ERROR_CHECK(esp_zb_set_primary_network_channel_set(ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK));
     ESP_ERROR_CHECK(esp_zb_start(false));
+    ESP_ERROR_CHECK(zigbee_ota_confirm_boot());
     s_zigbee_ready = true;
     esp_zb_stack_main_loop();
 }

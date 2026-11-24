@@ -633,6 +633,7 @@ builder = (
         endpoint_id=ENDPOINT,
         cluster_id=OnOff.cluster_id,
         unique_id_suffix="10",
+        new_primary=False,
         new_translation_key="ws2812_led",
         new_fallback_name="WS2812 LED",
         new_entity_category=EntityType.CONFIG,
@@ -646,6 +647,12 @@ builder = (
         new_fallback_name="Link Quality",
         new_entity_category=EntityType.DIAGNOSTIC,
         new_entity_registry_enabled_default=True,
+    )
+    .change_entity_metadata(
+        function=lambda entity: entity.__class__.__name__ == "FirmwareUpdateEntity",
+        new_translation_key="esp_firmware_update",
+        new_fallback_name="ESP Firmware update",
+        new_entity_category=EntityType.DIAGNOSTIC,
     )
 )
 

@@ -1,0 +1,3 @@
+#pragma once
+
+#define S1_PRO_OTA_FILE_VERSION @S1_PRO_OTA_FILE_VERSION@U

@@ -109,11 +109,7 @@ function withHomeAssistant(extend, homeassistant) {
 }
 
 function numeric(args, homeassistant) {
-    const writable = ["ALL", "STATE_SET", "SET"].includes(args.access);
-    return withHomeAssistant(m.numeric({cluster: CLUSTER_NAME, access: "STATE", ...args}), {
-        ...(writable ? {entityCategory: "config"} : {}),
-        ...homeassistant,
-    });
+    return withHomeAssistant(m.numeric({cluster: CLUSTER_NAME, access: "STATE", ...args}), homeassistant);
 }
 
 function binary(args, homeassistant) {
@@ -490,6 +486,11 @@ function overrideHaDiscoveryPayload(payload, options) {
     const entityId = payload.default_entity_id;
     if (typeof entityId !== "string") return;
 
+    if (entityId.startsWith("update.")) {
+        payload.name = "ESP Firmware update";
+        payload.entity_category = "diagnostic";
+    }
+
     if (entityId.endsWith("_linkquality")) {
         payload.enabled_by_default = true;
         payload.name = "Link Quality";
@@ -517,7 +518,10 @@ function overrideHaDiscoveryPayload(payload, options) {
         }
     }
 
-    if (entityId.startsWith("number.")) payload.mode = "box";
+    if (entityId.startsWith("number.")) {
+        delete payload.entity_category;
+        payload.mode = "box";
+    }
 
     const coordinate = entityId.match(/((?:exclusion_zone|zone_[1-3])_p[1-8]_[xy])$/)?.[1];
     if (coordinate) {
@@ -531,6 +535,7 @@ const definition = {
     model: "S1-Pro-ZB",
     vendor: "Sensy-One",
     description: "S1 Pro Multi Sense",
+    ota: {manufacturerName: "Sensy-One", modelId: "S1 Pro Multi Sense (Zigbee)"},
     meta: {overrideHaDiscoveryPayload},
     extend,
 };

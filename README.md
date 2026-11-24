@@ -169,7 +169,7 @@ Use the official **Sensy-One Zone Editor** app to configure zones visually. You 
 
 1. Open **Sensy-One Zone Editor** from Home Assistant.
 2. Select your S1 Pro sensor.
-3. Create or import your floorplan.
+3. Create your floorplan.
 4. Place and rotate the sensor on the floorplan.
 5. Draw Zone 1, Zone 2, Zone 3, or the Exclusion Zone.
 6. Save the configuration.
@@ -232,9 +232,7 @@ The SCD40 also provides a temperature offset and factory-reset button.
 
 ### LTR-F216A
 
-The built-in LTR-F216A measures ambient illuminance in lux. This hardware is
-an ambient-light sensor only, so the firmware does not expose a UV-index
-entity.
+The built-in LTR-F216A measures ambient illuminance in lux.
 
 ## LED and buzzer
 
@@ -263,18 +261,58 @@ In Homey, restart and reset controls are in the sensor's advanced settings. Afte
 
 ## Firmware update or recovery
 
-The S1 Pro is delivered with firmware installed. USB flashing is only needed for an update or recovery.
+### Upgrading from v1.1.1
 
-The current firmware version is **v1.1.1**.
+Firmware **v1.1.1** has no Zigbee OTA client and uses the old flash partition layout. It cannot receive firmware updates through ZHA or Zigbee2MQTT. A **one-time USB installation** is needed to install OTA support and the two firmware slots used by future updates.
 
-1. Download [`S1_Pro_Multi_Sense_Zigbee_v1.1.1_factory.bin`](firmware/S1_Pro_Multi_Sense_Zigbee_v1.1.1_factory.bin).
+1. Open the [latest release](https://github.com/sensy-one/S1-Pro-Multi-Sense-Zigbee/releases/latest) and download the file ending in `.firmware.factory.bin`.
+2. Flash this file using [ESPHome Web](https://web.esphome.io/), following the [USB installation instructions](#usb-installation-or-recovery) below.
+3. Pair and configure the S1 Pro again, then set up the OTA index for ZHA or Zigbee2MQTT as described below.
+
+After this USB installation, future firmware updates can be installed over Zigbee.
+
+### Zigbee2MQTT OTA updates
+
+1. Install the current [S1 Pro external converter](home_assistant/zigbee2mqtt/s1_pro_multi_sense_zigbee.mjs) and restart Zigbee2MQTT.
+2. Add the firmware index to the Zigbee2MQTT `configuration.yaml`:
+
+   ```yaml
+   ota:
+     zigbee_ota_override_index_location: https://github.com/sensy-one/S1-Pro-Multi-Sense-Zigbee/releases/latest/download/zigbee2mqtt-ota.json
+   ```
+
+3. Restart Zigbee2MQTT. If you have just installed OTA support over USB, re-interview the S1 Pro so Zigbee2MQTT discovers its OTA client cluster.
+4. Open **OTA**, check for updates and start the update. The device restarts after the image has been downloaded and verified.
+
+If an `ota:` section already exists, add the index setting to that section. If you already use a custom OTA index for other devices, merge the S1 Pro entry from `zigbee2mqtt-ota.json` in the [latest release](https://github.com/sensy-one/S1-Pro-Multi-Sense-Zigbee/releases/latest) into your existing index.
+
+### ZHA OTA updates
+
+Add the firmware provider under your existing `zha:` configuration:
+
+```yaml
+zha:
+  zigpy_config:
+    ota:
+      extra_providers:
+        - type: zigpy_remote
+          url: https://github.com/sensy-one/S1-Pro-Multi-Sense-Zigbee/releases/latest/download/zha-ota.json
+```
+
+Keep any existing ZHA options, such as `custom_quirks_path`, in the same section. Restart Home Assistant, open the S1 Pro device page, and use its firmware update entity to check for and install updates. After the first USB installation of OTA support, re-interview the device if the OTA cluster is not yet discovered.
+
+Firmware files and OTA indexes are available in the [latest release](https://github.com/sensy-one/S1-Pro-Multi-Sense-Zigbee/releases/latest). Automatic discovery without a custom index requires the firmware to be accepted into the upstream Zigbee2MQTT and ZHA firmware repositories.
+
+### USB installation or recovery
+
+1. Open the [latest release](https://github.com/sensy-one/S1-Pro-Multi-Sense-Zigbee/releases/latest) and download the file ending in `.firmware.factory.bin`.
 2. Open [ESPHome Web](https://web.esphome.io/) in Chrome or Edge on a desktop computer.
 3. Connect the S1 Pro using a USB data cable and the bottom-facing USB-C port.
 4. Select **Connect** and choose the S1 Pro serial port.
-5. Select **Install** and choose the downloaded `S1_Pro_Multi_Sense_Zigbee_v1.1.1_factory.bin`.
+5. Select **Install** and choose the downloaded factory firmware file.
 6. Wait until flashing and verification are complete.
 
-ESPHome Web is used only to install the firmware file. No ESPHome setup is needed.
+ESPHome Web is used only to install the firmware file.
 
 If no serial port appears, check that the USB cable supports data. If necessary, hold **BOOT** while connecting the S1 Pro to enter download mode.
 
