@@ -103,13 +103,17 @@ const S1_PRO_CLUSTER = Object.freeze({
 
 function withHomeAssistant(extend, homeassistant) {
     if (homeassistant) {
-        for (const expose of extend.exposes ?? []) expose.withHomeAssistant(homeassistant);
+        for (const expose of extend.exposes ?? []) expose.withHomeAssistant({name: expose.label, ...homeassistant});
     }
     return extend;
 }
 
 function numeric(args, homeassistant) {
-    return withHomeAssistant(m.numeric({cluster: CLUSTER_NAME, access: "STATE", ...args}), homeassistant);
+    const writable = ["ALL", "STATE_SET", "SET"].includes(args.access);
+    return withHomeAssistant(m.numeric({cluster: CLUSTER_NAME, access: "STATE", ...args}), {
+        ...(writable ? {entityCategory: "config"} : {}),
+        ...homeassistant,
+    });
 }
 
 function binary(args, homeassistant) {
@@ -132,7 +136,12 @@ function commandButton(name, description, label, icon, homeassistant = {}) {
         label,
         lookup: {PRESS: true},
         entityCategory: "config",
-    }), {entityCategory: "config", icon, ...homeassistant});
+    }), {
+        entityCategory: "config",
+        ...(name.endsWith("_restart_module") ? {deviceClass: "restart"} : {}),
+        icon,
+        ...homeassistant,
+    });
 }
 
 function initialAttributeRead() {
@@ -153,9 +162,7 @@ function initialAttributeRead() {
             for (let offset = 0; offset < readable.length; offset += 8) {
                 try {
                     await endpoint.read(CLUSTER_NAME, readable.slice(offset, offset + 8));
-                } catch {
-                    // Periodic reports populate state if a coordinator rejects an initial read.
-                }
+                } catch {}
             }
         }],
     };
@@ -187,14 +194,14 @@ const extend = [
         scale: 100,
         precision: 2,
         entityCategory: "diagnostic",
-    }, {entityCategory: "diagnostic", icon: "mdi:thermometer"}),
+    }, {deviceClass: "temperature", entityCategory: "diagnostic", icon: "mdi:thermometer"}),
     binary({
         name: "esp32_connected",
         attribute: "esp32_connected",
         description: "ESP32 Zigbee connection status",
         label: "ESP32 Status",
         entityCategory: "diagnostic",
-    }, {entityCategory: "diagnostic", icon: "mdi:lan-connect"}),
+    }, {deviceClass: "connectivity", entityCategory: "diagnostic", icon: "mdi:lan-connect"}),
 ];
 
 for (let target = 1; target <= 3; target++) {
@@ -207,7 +214,7 @@ for (let target = 1; target <= 3; target++) {
             unit: "cm",
             scale: 10,
             precision: 1,
-        }, {icon: axis === "x" ? "mdi:alpha-x-box-outline" : "mdi:alpha-y-box-outline"}));
+        }, {deviceClass: "distance", icon: axis === "x" ? "mdi:alpha-x-box-outline" : "mdi:alpha-y-box-outline"}));
     }
     extend.push(numeric({
         name: `target_${target}_distance`,
@@ -217,7 +224,7 @@ for (let target = 1; target <= 3; target++) {
         unit: "cm",
         scale: 10,
         precision: 1,
-    }, {icon: "mdi:map-marker-distance"}));
+    }, {deviceClass: "distance", icon: "mdi:map-marker-distance"}));
     extend.push(numeric({
         name: `target_${target}_speed`,
         attribute: `target_${target}_speed`,
@@ -250,13 +257,13 @@ extend.push(
         attribute: "any_presence",
         description: "Presence detected by any radar target",
         label: "Any Presence",
-    }, {icon: "mdi:home-account"}),
+    }, {deviceClass: "presence", icon: "mdi:home-account"}),
     binary({
         name: "any_movement",
         attribute: "any_movement",
         description: "Movement detected by any radar target",
         label: "Any Movement",
-    }, {icon: "mdi:motion-sensor"}),
+    }, {deviceClass: "motion", icon: "mdi:motion-sensor"}),
     numeric({
         name: "detection_range",
         attribute: "detection_range",
@@ -267,7 +274,7 @@ extend.push(
         valueMin: 20,
         valueMax: 600,
         valueStep: 1,
-    }, {icon: "mdi:signal-distance-variant"}),
+    }, {deviceClass: "distance", icon: "mdi:signal-distance-variant"}),
     numeric({
         name: "any_movement_threshold",
         attribute: "any_movement_threshold",
@@ -289,7 +296,7 @@ extend.push(
         valueMin: 0,
         valueMax: 300,
         valueStep: 1,
-    }, {icon: "mdi:timer-outline"}),
+    }, {deviceClass: "duration", icon: "mdi:timer-outline"}),
     binary({
         name: "holding_enabled",
         attribute: "holding_enabled",
@@ -308,7 +315,7 @@ extend.push(
         valueMin: 5,
         valueMax: 300,
         valueStep: 1,
-    }, {icon: "mdi:crosshairs-gps"}),
+    }, {deviceClass: "distance", icon: "mdi:crosshairs-gps"}),
     numeric({
         name: "stationary_speed_threshold",
         attribute: "stationary_speed_threshold",
@@ -330,7 +337,7 @@ extend.push(
         valueMin: 0,
         valueMax: 120,
         valueStep: 1,
-    }, {icon: "mdi:timer-sand"}),
+    }, {deviceClass: "duration", icon: "mdi:timer-sand"}),
     numeric({
         name: "dropout_hold_time",
         attribute: "dropout_hold_time",
@@ -341,7 +348,7 @@ extend.push(
         valueMin: 0,
         valueMax: 60,
         valueStep: 1,
-    }, {icon: "mdi:timer-lock-outline"}),
+    }, {deviceClass: "duration", icon: "mdi:timer-lock-outline"}),
 );
 
 for (const [name, label, description] of [
@@ -369,13 +376,13 @@ extend.push(
     commandButton("esp32_restart_module", "Restart the complete ESP32-C6 device", "ESP32 Restart Module", "mdi:restart"),
     commandButton("esp32_factory_reset", "Erase settings and the Zigbee network", "ESP32 Factory Reset", "mdi:factory"),
 
-    numeric({name: "bme_temperature", attribute: "bme_temperature", description: "BME688 temperature", label: "BME688 temperature", unit: "°C", scale: 100, precision: 2}, {icon: "mdi:thermometer"}),
-    numeric({name: "bme_humidity", attribute: "bme_humidity", description: "BME688 relative humidity", label: "BME688 humidity", unit: "%", scale: 100, precision: 2}, {icon: "mdi:water-percent"}),
-    numeric({name: "bme_pressure", attribute: "bme_pressure", description: "BME688 atmospheric pressure", label: "BME688 pressure", unit: "hPa", scale: 100, precision: 2}, {icon: "mdi:gauge"}),
+    numeric({name: "bme_temperature", attribute: "bme_temperature", description: "BME688 temperature", label: "BME688 temperature", unit: "°C", scale: 100, precision: 2}, {deviceClass: "temperature", icon: "mdi:thermometer"}),
+    numeric({name: "bme_humidity", attribute: "bme_humidity", description: "BME688 relative humidity", label: "BME688 humidity", unit: "%", scale: 100, precision: 2}, {deviceClass: "humidity", icon: "mdi:water-percent"}),
+    numeric({name: "bme_pressure", attribute: "bme_pressure", description: "BME688 atmospheric pressure", label: "BME688 pressure", unit: "hPa", scale: 100, precision: 2}, {deviceClass: "atmospheric_pressure", icon: "mdi:gauge"}),
     numeric({name: "bme_gas_resistance", attribute: "bme_gas_resistance", description: "BME688 gas resistance", label: "BME688 gas resistance", unit: "kΩ", scale: 1000, precision: 2}, {icon: "mdi:omega"}),
-    numeric({name: "bme_co2_equivalent", attribute: "bme_co2_equivalent", description: "BME688 estimated CO2 equivalent", label: "BME688 CO2 equivalent", unit: "ppm", precision: 0}, {icon: "mdi:molecule-co2"}),
-    numeric({name: "bme_voc_equivalent", attribute: "bme_voc_equivalent", description: "BME688 estimated VOC equivalent", label: "BME688 VOC equivalent", unit: "ppm", scale: 100, precision: 2}, {icon: "mdi:molecule"}),
-    numeric({name: "bme_iaq", attribute: "bme_iaq", description: "BME688 indoor air-quality index", label: "BME688 IAQ", precision: 0}, {icon: "mdi:gauge"}),
+    numeric({name: "bme_co2_equivalent", attribute: "bme_co2_equivalent", description: "BME688 estimated CO2 equivalent", label: "BME688 CO2 equivalent", unit: "ppm", precision: 0}, {deviceClass: "carbon_dioxide", icon: "mdi:molecule-co2"}),
+    numeric({name: "bme_voc_equivalent", attribute: "bme_voc_equivalent", description: "BME688 estimated VOC equivalent", label: "BME688 VOC equivalent", unit: "ppm", scale: 100, precision: 2}, {deviceClass: "volatile_organic_compounds_parts", icon: "mdi:molecule"}),
+    numeric({name: "bme_iaq", attribute: "bme_iaq", description: "BME688 indoor air-quality index", label: "BME688 IAQ", precision: 0}, {deviceClass: "aqi", icon: "mdi:gauge"}),
     withHomeAssistant(m.enumLookup({
         name: "bme_bsec_accuracy",
         cluster: CLUSTER_NAME,
@@ -396,15 +403,15 @@ extend.push(
     }), {icon: "mdi:air-filter"}),
     numeric({name: "bme_temperature_offset", attribute: "bme_temperature_offset", access: "ALL", description: "BME688 temperature correction", label: "BME688 Temp Offset", unit: "°C", scale: 100, precision: 2, valueMin: 0, valueMax: 30, valueStep: 0.01}, {icon: "mdi:thermometer-plus"}),
 
-    numeric({name: "scd40_co2", attribute: "scd40_co2", description: "SCD40 measured CO2 concentration", label: "SCD40 CO2", unit: "ppm", precision: 0}, {enabledByDefault: false, icon: "mdi:molecule-co2"}),
-    numeric({name: "scd40_temperature", attribute: "scd40_temperature", description: "SCD40 temperature", label: "SCD40 temperature", unit: "°C", scale: 100, precision: 2}, {enabledByDefault: false, icon: "mdi:thermometer"}),
-    numeric({name: "scd40_humidity", attribute: "scd40_humidity", description: "SCD40 relative humidity", label: "SCD40 humidity", unit: "%", scale: 100, precision: 2}, {enabledByDefault: false, icon: "mdi:water-percent"}),
-    numeric({name: "scd40_calibration_reference", attribute: "scd40_calibration_reference", access: "ALL", description: "CO2 reference value for forced calibration", label: "SCD40 Calibration Reference", unit: "ppm", valueMin: 400, valueMax: 2000, valueStep: 1}, {enabledByDefault: false, icon: "mdi:tune"}),
+    numeric({name: "scd40_co2", attribute: "scd40_co2", description: "SCD40 measured CO2 concentration", label: "SCD40 CO2", unit: "ppm", precision: 0}, {deviceClass: "carbon_dioxide", enabledByDefault: false, icon: "mdi:molecule-co2"}),
+    numeric({name: "scd40_temperature", attribute: "scd40_temperature", description: "SCD40 temperature", label: "SCD40 temperature", unit: "°C", scale: 100, precision: 2}, {deviceClass: "temperature", enabledByDefault: false, icon: "mdi:thermometer"}),
+    numeric({name: "scd40_humidity", attribute: "scd40_humidity", description: "SCD40 relative humidity", label: "SCD40 humidity", unit: "%", scale: 100, precision: 2}, {deviceClass: "humidity", enabledByDefault: false, icon: "mdi:water-percent"}),
+    numeric({name: "scd40_calibration_reference", attribute: "scd40_calibration_reference", access: "ALL", description: "CO2 reference value for forced calibration", label: "SCD40 Calibration Reference", unit: "ppm", valueMin: 400, valueMax: 2000, valueStep: 1}, {deviceClass: "carbon_dioxide", enabledByDefault: false, icon: "mdi:tune"}),
     commandButton("scd40_forced_calibration", "Run SCD40 forced calibration", "SCD40 Forced Calibration", "mdi:tune", {enabledByDefault: false}),
     commandButton("scd40_factory_reset", "Factory-reset the SCD40", "SCD40 Factory Reset", "mdi:factory", {enabledByDefault: false}),
     numeric({name: "scd40_temperature_offset", attribute: "scd40_temperature_offset", access: "ALL", description: "SCD40 temperature correction", label: "SCD40 Temp Offset", unit: "°C", scale: 100, precision: 2, valueMin: 0, valueMax: 30, valueStep: 0.01}, {enabledByDefault: false, icon: "mdi:thermometer-plus"}),
 
-    numeric({name: "ltrf216a_illuminance", attribute: "ltrf216a_illuminance", description: "LTR-F216A ambient illuminance", label: "LTR-F216A Illuminance", unit: "lx", scale: 100, precision: 2}, {icon: "mdi:brightness-5"}),
+    numeric({name: "ltrf216a_illuminance", attribute: "ltrf216a_illuminance", description: "LTR-F216A ambient illuminance", label: "LTR-F216A Illuminance", unit: "lx", scale: 100, precision: 2}, {deviceClass: "illuminance", icon: "mdi:brightness-5"}),
     binary({name: "buzzer_power", attribute: "buzzer_power", access: "ALL", description: "MLT8530 buzzer power", label: "MLT8530 Buzzer", entityCategory: "config"}, {entityCategory: "config", icon: "mdi:surround-sound"}),
 );
 
@@ -434,7 +441,7 @@ for (let point = 1; point <= 8; point++) {
             valueMax: 600,
             valueStep: 1,
             precision: 0,
-        }, {icon: "mdi:map-marker"}));
+        }, {deviceClass: "distance", icon: "mdi:map-marker"}));
     }
 }
 
@@ -453,20 +460,23 @@ for (let zone = 1; zone <= 3; zone++) {
                 valueMax: 600,
                 valueStep: 1,
                 precision: 0,
-            }, {icon: "mdi:map-marker"}));
+            }, {deviceClass: "distance", icon: "mdi:map-marker"}));
         }
     }
     extend.push(
         numeric({name: `zone_${zone}_points_count`, attribute: `zone_${zone}_points_count`, access: "STATE_SET", description: `Number of active polygon points in zone ${zone}`, label: `Zone ${zone} Points Count`, unit: "pts", valueMin: 0, valueMax: 8, valueStep: 1}, {icon: "mdi:counter"}),
         numeric({name: `zone_${zone}_movement_threshold`, attribute: `zone_${zone}_movement_threshold`, access: "STATE_SET", description: `Movement threshold for zone ${zone}`, label: `Zone ${zone} Movement Threshold`, unit: "cm/s", valueMin: 0, valueMax: 500, valueStep: 1}, {icon: "mdi:motion-sensor"}),
-        numeric({name: `zone_${zone}_presence_delay`, attribute: `zone_${zone}_presence_delay`, access: "STATE_SET", description: `Presence delay for zone ${zone}`, label: `Zone ${zone} Presence Delay`, unit: "s", valueMin: 0, valueMax: 300, valueStep: 1}, {icon: "mdi:timer-outline"}),
-        binary({name: `zone_${zone}_presence`, attribute: `zone_${zone}_presence`, description: `Presence detected in zone ${zone}`, label: `Zone ${zone} Presence`}, {icon: "mdi:home-account"}),
-        binary({name: `zone_${zone}_movement`, attribute: `zone_${zone}_movement`, description: `Movement detected in zone ${zone}`, label: `Zone ${zone} Movement`}, {icon: "mdi:motion-sensor"}),
+        numeric({name: `zone_${zone}_presence_delay`, attribute: `zone_${zone}_presence_delay`, access: "STATE_SET", description: `Presence delay for zone ${zone}`, label: `Zone ${zone} Presence Delay`, unit: "s", valueMin: 0, valueMax: 300, valueStep: 1}, {deviceClass: "duration", icon: "mdi:timer-outline"}),
+        binary({name: `zone_${zone}_presence`, attribute: `zone_${zone}_presence`, description: `Presence detected in zone ${zone}`, label: `Zone ${zone} Presence`}, {deviceClass: "presence", icon: "mdi:home-account"}),
+        binary({name: `zone_${zone}_movement`, attribute: `zone_${zone}_movement`, description: `Movement detected in zone ${zone}`, label: `Zone ${zone} Movement`}, {deviceClass: "motion", icon: "mdi:motion-sensor"}),
         numeric({name: `zone_${zone}_target_count`, attribute: `zone_${zone}_target_count`, description: `Number of targets in zone ${zone}`, label: `Zone ${zone} Target Count`, precision: 0}, {icon: "mdi:counter"}),
     );
 }
 
 extend.push(initialAttributeRead());
+
+const sensorExposes = extend.flatMap((extension) => extension.exposes ?? [])
+    .filter((expose) => expose.type === "numeric" || expose.type === "enum");
 
 function overrideHaDiscoveryPayload(payload, options) {
     if (payload.device) {
@@ -497,9 +507,14 @@ function overrideHaDiscoveryPayload(payload, options) {
         }
     }
 
-    if (entityId.endsWith("_ltrf216a_illuminance")) {
-        payload.device_class = "illuminance";
-        payload.state_class = "measurement";
+    if (entityId.startsWith("sensor.")) {
+        const expose = sensorExposes.find((candidate) => entityId.endsWith(`_${candidate.property}`));
+        if (expose?.type === "numeric") {
+            payload.state_class = "measurement";
+        } else if (expose?.type === "enum") {
+            payload.device_class = "enum";
+            payload.options = expose.values.map(String);
+        }
     }
 
     if (entityId.startsWith("number.")) payload.mode = "box";
